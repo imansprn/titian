@@ -1,0 +1,22 @@
+# Secrets & runtime state (never commit)
+.env
+.mcp-token
+.oauth-client-id
+.oauth-client-secret
+.oauth-consent-pin
+.oauth-signing-key
+.oauth-state.json
+*.key
+*.crt
+*.pem
+
+# Logs, backups, dependencies
+logs/
+*.log
+*.bak
+*.bak.*
+node_modules/
+
+# Local tooling
+.claude/
+.DS_Store

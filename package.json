@@ -1,0 +1,15 @@
+{
+  "name": "titian",
+  "version": "1.0.0",
+  "description": "A narrow bridge from ChatGPT & Claude to your desktop: Desktop Commander MCP over Streamable HTTP behind an OAuth 2.1 gate.",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "setup": "npm --prefix http-bridge ci",
+    "start:bridge": "node --env-file=.env http-bridge/bridge.js",
+    "start:proxy": "node --env-file=.env mcp-auth-proxy.js"
+  }
+}
