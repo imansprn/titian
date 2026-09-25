@@ -1,5 +1,11 @@
 # titian
 
+[![CI](https://github.com/imansprn/titian/actions/workflows/ci.yml/badge.svg)](https://github.com/imansprn/titian/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/imansprn/titian)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-6f42c1)](https://modelcontextprotocol.io)
+[![OAuth 2.1](https://img.shields.io/badge/OAuth-2.1%20%2B%20PKCE-0a84ff)](SECURITY.md)
+
 *titian* (Indonesian): a narrow footbridge across a stream.
 
 A narrow bridge from ChatGPT & Claude to your desktop. Run [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) on your own machine and use it from **ChatGPT** and **Claude** remote MCP connectors, over HTTPS and behind an OAuth 2.1 login.
@@ -29,7 +35,7 @@ dc-wrapper.js → @wonderwhy-er/desktop-commander
 
 ## Requirements
 
-- Node.js 20.6 or newer
+- Node.js 22 or newer
 - A way to publish `127.0.0.1:8000` over HTTPS. [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) is the easiest; any TLS reverse proxy works.
 
 ## Setup
