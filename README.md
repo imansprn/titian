@@ -80,6 +80,20 @@ All settings are environment variables. See [`.env.example`](.env.example) for t
 
 `GET /healthz` on both the proxy and the bridge returns `ok`.
 
+## Development
+
+Tests use the built-in `node:test` runner, so there are no extra dependencies:
+
+```bash
+npm run setup   # once, for the bridge's MCP SDK
+npm test
+```
+
+- `tests/` covers the auth proxy (helpers, the full OAuth flow, startup and secret bootstrapping) and `dc-wrapper.js` (stdio piping, process-group cleanup).
+- `http-bridge/tests/` starts the real bridge against a fake stdio MCP server.
+
+Set `TEST_VERBOSE=1` to see the proxy's request log.
+
 ## License
 
 [MIT](LICENSE). Desktop Commander is a separate project with its own license.

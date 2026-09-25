@@ -405,6 +405,10 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
 });
 
 server.on('clientError', (_e, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); });
-server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-  console.error(`[mcp-auth-proxy] ${LISTEN_HOST}:${LISTEN_PORT} -> ${UPSTREAM_HOST}:${UPSTREAM_PORT} | oauth issuer=${PUBLIC_BASE}`);
-});
+if (require.main === module) {
+  server.listen(LISTEN_PORT, LISTEN_HOST, () => {
+    console.error(`[mcp-auth-proxy] ${LISTEN_HOST}:${LISTEN_PORT} -> ${UPSTREAM_HOST}:${UPSTREAM_PORT} | oauth issuer=${PUBLIC_BASE}`);
+  });
+}
+
+module.exports = { server, signJWT, verifyJWT, isAuthorized, isSafeRedirect, escapeHtml, timingSafeEqual };
