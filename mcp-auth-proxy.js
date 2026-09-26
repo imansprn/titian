@@ -13,7 +13,7 @@
  *   /.well-known/openid-configuration          OIDC discovery (alias)
  *   POST /register                             DCR (RFC 7591)
  *   GET/POST /authorize                        consent page -> authorization code
- *   POST /token                                authorization_code / refresh_token / client_credentials
+ *   POST /token                                authorization_code / refresh_token
  *   /mcp                                       auth gate -> proxy to Supergateway
  *
  * Security model (single user, public via Funnel):
@@ -40,6 +40,10 @@ if (!PUBLIC_BASE) {
 }
 const SERVER_LABEL = process.env.MCP_SERVER_LABEL || os.hostname();
 const MCP_ENDPOINT = PUBLIC_BASE + '/mcp';
+const RESOURCE_METADATA = new URL(PUBLIC_BASE).pathname === '/'
+  ? PUBLIC_BASE + '/.well-known/oauth-protected-resource'
+  : new URL(PUBLIC_BASE).origin + '/.well-known/oauth-protected-resource' + new URL(MCP_ENDPOINT).pathname;
+fs.mkdirSync(BASE_DIR, { recursive: true, mode: 0o700 });
 
 const ACCESS_TTL = 86400;     // access token lifetime: 24h
 const REFRESH_TTL = 2592000;  // refresh token lifetime: 30 days
@@ -65,10 +69,10 @@ if (!CONSENT_PIN) {
 }
 
 // ---- in-memory OAuth state ----
-const clients = {};   // client_id -> { secret, name, redirect_uris: [] }
-const authReqs = {};  // auth_id -> { client_id, redirect_uri, code_challenge, code_challenge_method, state, exp }
-const codes = {};     // code -> { client_id, redirect_uri, code_challenge, exp }
-const refresh = {};   // refresh_token -> { client_id, exp }
+const clients = Object.create(null);   // client_id -> { secret, name, redirect_uris: [] }
+const authReqs = Object.create(null);  // auth_id -> { client_id, redirect_uri, code_challenge, code_challenge_method, state, exp }
+const codes = Object.create(null);     // code -> { client_id, redirect_uri, code_challenge, exp }
+const refresh = Object.create(null);   // refresh_token -> { client_id, exp }
 
 // Clients and refresh tokens are persisted so a proxy restart doesn't invalidate ChatGPT's login.
 const STATE_FILE = path.join(BASE_DIR, '.oauth-state.json');
@@ -83,7 +87,7 @@ function saveState() {
   try { fs.writeFileSync(STATE_FILE, JSON.stringify({ clients, refresh }), { mode: 0o600 }); } catch (e) { console.error('saveState failed:', e.message); }
 }
 
-// pre-registered client (legacy client_credentials fallback)
+// Pre-registered client (authorization-code flow only).
 const PREREG_ID = loadFile('.oauth-client-id');
 const PREREG_SECRET = loadFile('.oauth-client-secret');
 if (PREREG_ID && PREREG_SECRET) {
@@ -115,7 +119,7 @@ function verifyJWT(token) {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   try {
     const payload = JSON.parse(Buffer.from(p, 'base64url').toString());
-    if (payload.exp && Date.now() / 1000 > payload.exp) return null;
+    if (!payload || !Number.isFinite(payload.exp) || Date.now() / 1000 >= payload.exp || payload.iss !== PUBLIC_BASE || payload.aud !== MCP_ENDPOINT) return null;
     return payload;
   } catch (_) { return null; }
 }
@@ -133,9 +137,10 @@ function isAuthorized(req) {
   return false;
 }
 function isSafeRedirect(uri) {
-  if (!uri) return false;
+  if (typeof uri !== 'string' || !uri) return false;
   try {
     const u = new URL(uri);
+    if (u.hash || u.username || u.password) return false;
     if (u.protocol === 'https:') return true;
     if (u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]')) return true;
     return false;
@@ -190,7 +195,7 @@ const server = http.createServer((req, res) => {
       token_endpoint: PUBLIC_BASE + '/token',
       registration_endpoint: PUBLIC_BASE + '/register',
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
       token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
       code_challenge_methods_supported: ['S256'],
       scopes_supported: [],
@@ -201,9 +206,15 @@ const server = http.createServer((req, res) => {
   // ---- Dynamic Client Registration (RFC 7591) ----
   if (pathname === '/register' && req.method === 'POST') {
     readBody(req, (body) => {
-      let meta = {};
-      try { meta = JSON.parse(body); } catch (_) {}
+      let meta;
+      try { meta = JSON.parse(body); } catch (_) { sendJSON(res, 400, { error: 'invalid_client_metadata' }); return; }
+      if (!meta || typeof meta !== 'object' || Array.isArray(meta) ||
+          (meta.client_name !== undefined && typeof meta.client_name !== 'string') ||
+          !Array.isArray(meta.redirect_uris)) {
+        sendJSON(res, 400, { error: 'invalid_client_metadata' }); return;
+      }
       const redirectUris = Array.isArray(meta.redirect_uris) ? meta.redirect_uris.filter(isSafeRedirect) : [];
+      if (!redirectUris.length) { sendJSON(res, 400, { error: 'invalid_redirect_uri' }); return; }
       const clientId = 'mcp-' + randHex(9);
       const clientSecret = randHex(24);
       clients[clientId] = { secret: clientSecret, name: meta.client_name || 'MCP client', redirect_uris: redirectUris };
@@ -234,6 +245,7 @@ const server = http.createServer((req, res) => {
       const response_type = url.searchParams.get('response_type');
       if (response_type !== 'code') { sendJSON(res, 400, { error: 'unsupported_response_type' }); return; }
       if (!clients[client_id]) { log(req, 400, 'unknown-client'); sendJSON(res, 400, { error: 'invalid_client', error_description: 'unknown client' }); return; }
+      if (!clients[client_id].redirect_uris.includes(redirect_uri)) { sendJSON(res, 400, { error: 'invalid_request', error_description: 'unregistered redirect_uri' }); return; }
       if (!isSafeRedirect(redirect_uri)) { sendJSON(res, 400, { error: 'invalid_request', error_description: 'unsafe redirect_uri' }); return; }
       if (code_challenge_method !== 'S256' || !code_challenge) { sendJSON(res, 400, { error: 'invalid_request', error_description: 'PKCE S256 required' }); return; }
       const authId = randHex(16);
@@ -251,7 +263,7 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
 <body><div class="card"><h2>Authorize ${escapeHtml(clientName)}</h2>
 <div class="warn">⚠️ This grants access to Desktop Commander on <b>${escapeHtml(SERVER_LABEL)}</b> — full filesystem &amp; terminal (as your user).</div>
 <p>Enter the consent PIN (see the <code>.oauth-consent-pin</code> file on the server) to approve.</p>
-<form method="POST" action="/authorize"><input type="hidden" name="auth_id" value="${authId}">
+<form method="POST" action="${escapeHtml(PUBLIC_BASE)}/authorize"><input type="hidden" name="auth_id" value="${authId}">
 <label for="pin">Consent PIN</label><input type="password" name="pin" id="pin" autofocus>
 <div class="btns"><button type="submit" name="decision" value="approve" class="approve">Approve</button>
 <button type="submit" name="decision" value="deny" class="deny">Deny</button></div></form></div></body></html>`;
@@ -265,9 +277,11 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
         const authReq = authReqs[f.auth_id];
         if (!authReq || Date.now() > authReq.exp) { sendHTML(res, 400, '<h1>Expired</h1><p>This authorization request has expired. Please retry from your client.</p>'); return; }
         delete authReqs[f.auth_id];
-        const rd = authReq.redirect_uri;
+        const rd = new URL(authReq.redirect_uri);
+        rd.searchParams.set('state', authReq.state || '');
         if (f.decision !== 'approve') {
-          res.writeHead(302, { Location: `${rd}?error=access_denied&state=${encodeURIComponent(authReq.state || '')}` });
+          rd.searchParams.set('error', 'access_denied');
+          res.writeHead(302, { Location: rd.href });
           res.end();
           return;
         }
@@ -277,7 +291,8 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
         }
         const code = randHex(24);
         codes[code] = { client_id: authReq.client_id, redirect_uri: authReq.redirect_uri, code_challenge: authReq.code_challenge, exp: Date.now() + CODE_TTL };
-        res.writeHead(302, { Location: `${rd}?code=${code}&state=${encodeURIComponent(authReq.state || '')}` });
+        rd.searchParams.set('code', code);
+        res.writeHead(302, { Location: rd.href });
         res.end();
       });
       return;
@@ -291,6 +306,9 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
     readBody(req, (body) => {
       let p = {};
       try { p = JSON.parse(body); } catch (_) { p = parseForm(body); }
+      if (!p || typeof p !== 'object' || Array.isArray(p) || Object.values(p).some(v => typeof v !== 'string')) {
+        sendJSON(res, 400, { error: 'invalid_request' }); return;
+      }
       let cid = p.client_id || '';
       let csec = p.client_secret || '';
       const basic = (req.headers['authorization'] || '').match(/^Basic\s+(.+)$/i);
@@ -304,8 +322,8 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
         const code = codes[p.code];
         if (!code || Date.now() > code.exp) { sendJSON(res, 400, { error: 'invalid_grant', error_description: 'code expired or invalid' }); return; }
         delete codes[p.code];
-        if (p.redirect_uri && p.redirect_uri !== code.redirect_uri) { sendJSON(res, 400, { error: 'invalid_grant', error_description: 'redirect_uri mismatch' }); return; }
-        if (cid && cid !== code.client_id) { sendJSON(res, 400, { error: 'invalid_grant', error_description: 'client mismatch' }); return; }
+        if (p.redirect_uri !== code.redirect_uri) { sendJSON(res, 400, { error: 'invalid_grant', error_description: 'redirect_uri mismatch' }); return; }
+        if (cid !== code.client_id) { sendJSON(res, 400, { error: 'invalid_grant', error_description: 'client mismatch' }); return; }
         // PKCE
         const verifier = p.code_verifier || '';
         if (!verifier) { sendJSON(res, 400, { error: 'invalid_grant', error_description: 'missing code_verifier' }); return; }
@@ -325,7 +343,7 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
       if (grant === 'refresh_token') {
         const rt = p.refresh_token || '';
         const rec = refresh[rt];
-        if (!rec || rec.exp < now) { log(req, 400, 'refresh-invalid'); sendJSON(res, 400, { error: 'invalid_grant', error_description: 'refresh token invalid or expired' }); return; }
+        if (!rec || rec.exp < now || cid !== rec.client_id) { log(req, 400, 'refresh-invalid'); sendJSON(res, 400, { error: 'invalid_grant', error_description: 'refresh token invalid or expired' }); return; }
         delete refresh[rt];
         const access_token = signJWT({ iss: PUBLIC_BASE, aud: MCP_ENDPOINT, sub: rec.client_id, iat: now, exp: now + ACCESS_TTL });
         const new_rt = randHex(32);
@@ -336,20 +354,7 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
         return;
       }
 
-      // client_credentials (legacy fallback)
-      if (grant === 'client_credentials') {
-        const rec = clients[cid];
-        if (!rec || !rec.secret || !timingSafeEqual(csec, rec.secret)) {
-          res.writeHead(401, { 'Content-Type': 'application/json', ...CORS, 'WWW-Authenticate': 'Basic realm="mcp"', 'Cache-Control': 'no-store' });
-          res.end(JSON.stringify({ error: 'invalid_client', error_description: 'client authentication failed' }));
-          return;
-        }
-        const access_token = signJWT({ iss: PUBLIC_BASE, aud: MCP_ENDPOINT, sub: cid, iat: now, exp: now + ACCESS_TTL });
-        sendJSON(res, 200, { access_token, token_type: 'Bearer', expires_in: ACCESS_TTL, scope: '' }, { 'Cache-Control': 'no-store' });
-        return;
-      }
-
-      sendJSON(res, 400, { error: 'unsupported_grant_type', error_description: 'supported: authorization_code, refresh_token, client_credentials' });
+      sendJSON(res, 400, { error: 'unsupported_grant_type', error_description: 'supported: authorization_code, refresh_token' });
     });
     return;
   }
@@ -372,7 +377,7 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
   if (!isAuthorized(req)) {
     res.writeHead(401, {
       'Content-Type': 'application/json', ...CORS,
-      'WWW-Authenticate': `Bearer resource_metadata="${PUBLIC_BASE}/.well-known/oauth-protected-resource"`,
+      'WWW-Authenticate': `Bearer resource_metadata="${RESOURCE_METADATA}"`,
     });
     res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'Unauthorized' }, id: null }));
     log(req, 401, false);
@@ -380,7 +385,7 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
   }
 
   // ---- proxy to Supergateway ----
-  const proxyReq = http.request({
+  const proxyReq = http.request({ agent: false,
     host: UPSTREAM_HOST, port: UPSTREAM_PORT, path: req.url, method: req.method,
     headers: { ...req.headers, host: `${UPSTREAM_HOST}:${UPSTREAM_PORT}` },
   }, (proxyRes) => {
@@ -404,7 +409,7 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
   req.pipe(proxyReq);
 });
 
-server.on('clientError', (_e, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); });
+server.on('clientError', (_e, socket) => { console.error('clientError', _e.code, _e.message); if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); });
 if (require.main === module) {
   server.listen(LISTEN_PORT, LISTEN_HOST, () => {
     console.error(`[mcp-auth-proxy] ${LISTEN_HOST}:${LISTEN_PORT} -> ${UPSTREAM_HOST}:${UPSTREAM_PORT} | oauth issuer=${PUBLIC_BASE}`);

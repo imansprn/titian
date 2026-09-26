@@ -13,7 +13,7 @@ function loadProxy(env = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'titian-test-'));
   for (const k of ['MCP_AUTH_TOKEN', 'MCP_OAUTH_SIGNING_KEY', 'MCP_OAUTH_PIN']) delete process.env[k];
   Object.assign(process.env, { MCP_PUBLIC_BASE: 'https://titian.test', MCP_DATA_DIR: dataDir, ...env });
-  const proxy = require('../mcp-auth-proxy.js');
+  const proxy = require(process.env.TITIAN_PROXY_MODULE || '../mcp-auth-proxy.js');
   return { proxy, dataDir };
 }
 

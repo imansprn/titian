@@ -153,7 +153,7 @@ describe('token endpoint', () => {
 
   it('exchanges a code for tokens with a valid PKCE verifier', async () => {
     const { client, verifier, code } = await getCode();
-    const res = await postToken(base, { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: REDIRECT });
+    const res = await postToken(base, { grant_type: 'authorization_code', client_id: client.client_id, redirect_uri: REDIRECT, code, code_verifier: verifier, redirect_uri: REDIRECT });
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('cache-control'), 'no-store');
     const body = await res.json();
@@ -166,17 +166,17 @@ describe('token endpoint', () => {
   });
 
   it('accepts a JSON request body', async () => {
-    const { verifier, code } = await getCode();
+    const { client, verifier, code } = await getCode();
     const res = await fetch(`${base}/token`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: verifier }),
+      body: JSON.stringify({ grant_type: 'authorization_code', client_id: client.client_id, redirect_uri: REDIRECT, code, code_verifier: verifier }),
     });
     assert.equal(res.status, 200);
   });
 
   it('rejects code replay', async () => {
-    const { verifier, code } = await getCode();
-    const params = { grant_type: 'authorization_code', code, code_verifier: verifier };
+    const { client, verifier, code } = await getCode();
+    const params = { grant_type: 'authorization_code', client_id: client.client_id, redirect_uri: REDIRECT, code, code_verifier: verifier };
     assert.equal((await postToken(base, params)).status, 200);
     const replay = await postToken(base, params);
     assert.equal(replay.status, 400);
@@ -191,8 +191,8 @@ describe('token endpoint', () => {
   ];
   for (const [what, override, desc] of badExchanges) {
     it(`rejects ${what}`, async () => {
-      const { verifier, code } = await getCode();
-      const res = await postToken(base, { grant_type: 'authorization_code', code, code_verifier: verifier, ...override() });
+      const { client, verifier, code } = await getCode();
+      const res = await postToken(base, { grant_type: 'authorization_code', client_id: client.client_id, redirect_uri: REDIRECT, code, code_verifier: verifier, ...override() });
       assert.equal(res.status, 400);
       const body = await res.json();
       assert.equal(body.error, 'invalid_grant');
@@ -201,34 +201,36 @@ describe('token endpoint', () => {
   }
 
   it('rotates refresh tokens and rejects the old one', async () => {
-    const { tokens } = await fullAuthorization(base, PIN);
-    const first = await postToken(base, { grant_type: 'refresh_token', refresh_token: tokens.refresh_token });
+    const { client, tokens } = await fullAuthorization(base, PIN);
+    const first = await postToken(base, { grant_type: 'refresh_token', client_id: client.client_id, refresh_token: tokens.refresh_token });
     assert.equal(first.status, 200);
     const rotated = await first.json();
     assert.notEqual(rotated.refresh_token, tokens.refresh_token);
     assert.ok(proxy.verifyJWT(rotated.access_token));
 
-    const reused = await postToken(base, { grant_type: 'refresh_token', refresh_token: tokens.refresh_token });
+    const reused = await postToken(base, { grant_type: 'refresh_token', client_id: client.client_id, refresh_token: tokens.refresh_token });
     assert.equal(reused.status, 400);
     assert.equal((await reused.json()).error, 'invalid_grant');
   });
 
-  it('issues tokens for client_credentials with a valid secret (basic and post)', async () => {
+  it('rejects client_credentials with a valid secret (basic and post)', async () => {
     const { body: client } = await register(base);
     const basic = Buffer.from(`${client.client_id}:${client.client_secret}`).toString('base64');
     const viaBasic = await postToken(base, { grant_type: 'client_credentials' }, { authorization: `Basic ${basic}` });
-    assert.equal(viaBasic.status, 200);
+    assert.equal(viaBasic.status, 400);
     const viaPost = await postToken(base, {
       grant_type: 'client_credentials', client_id: client.client_id, client_secret: client.client_secret,
     });
-    assert.equal(viaPost.status, 200);
+    assert.equal(viaPost.status, 400);
   });
 
-  it('rejects client_credentials with a wrong secret', async () => {
+  it('rejects client_credentials even with freshly registered valid credentials', async () => {
     const { body: client } = await register(base);
-    const res = await postToken(base, { grant_type: 'client_credentials', client_id: client.client_id, client_secret: 'nope' });
-    assert.equal(res.status, 401);
-    assert.equal((await res.json()).error, 'invalid_client');
+    const res = await postToken(base, { grant_type: 'client_credentials', client_id: client.client_id, client_secret: client.client_secret });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error, 'unsupported_grant_type');
+    const metadata = await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json();
+    assert.ok(!metadata.grant_types_supported.includes('client_credentials'));
   });
 
   it('rejects unsupported grant types', async () => {
@@ -260,7 +262,7 @@ describe('/mcp gate and proxying', () => {
   });
 
   it('proxies requests with an OAuth access token', async () => {
-    const { tokens } = await fullAuthorization(base, PIN);
+    const { client, tokens } = await fullAuthorization(base, PIN);
     const res = await post(`${base}/mcp`, { authorization: `Bearer ${tokens.access_token}` });
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('mcp-session-id'), 'sess-1');

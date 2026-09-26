@@ -45,12 +45,12 @@ describe('signJWT / verifyJWT', () => {
   const now = Math.floor(Date.now() / 1000);
 
   it('round-trips the payload', () => {
-    const payload = { sub: 'client-1', iat: now, exp: now + 60 };
+    const payload = { sub: 'client-1', iss: 'https://titian.test', aud: 'https://titian.test/mcp', iat: now, exp: now + 60 };
     assert.deepEqual(verifyJWT(signJWT(payload)), payload);
   });
 
-  it('accepts tokens without exp', () => {
-    assert.deepEqual(verifyJWT(signJWT({ sub: 'x' })), { sub: 'x' });
+  it('rejects tokens without exp', () => {
+    assert.equal(verifyJWT(signJWT({ sub: 'x' })), null);
   });
 
   it('rejects expired tokens', () => {
@@ -77,7 +77,7 @@ describe('isAuthorized', () => {
     assert.equal(isAuthorized(req({ authorization: 'Bearer static-token' })), true);
   });
   it('accepts a valid JWT', () => {
-    assert.equal(isAuthorized(req({ authorization: `bearer ${signJWT({ sub: 'c' })}` })), true);
+    assert.equal(isAuthorized(req({ authorization: `bearer ${signJWT({ sub: 'c', iss: 'https://titian.test', aud: 'https://titian.test/mcp', exp: Date.now() / 1000 + 60 })}` })), true);
   });
   it('accepts the static token as ?token=', () => {
     assert.equal(isAuthorized(req({}, '/mcp?token=static-token')), true);
