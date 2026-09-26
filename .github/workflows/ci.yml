@@ -35,3 +35,14 @@ jobs:
           cache-dependency-path: http-bridge/package-lock.json
       - run: npm run setup
       - run: npm test
+      - run: TITIAN_PROXY_MODULE=../project-mcp/src/auth-proxy.cjs node --test tests/proxy-*.test.js
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python3 project-mcp/test_failures.py
+      - run: python3 project-mcp/test_bootstrap.py
+      - run: node project-mcp/test-dependencies.cjs
+      - run: ./project-mcp/mcp-project init --origin https://ci.example.test
+      - run: python3 project-mcp/setup.py --install
+      - run: npm audit --prefix http-bridge --audit-level=moderate
+      - run: npm audit --prefix project-mcp/dependencies --audit-level=moderate

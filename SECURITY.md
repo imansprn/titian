@@ -22,3 +22,9 @@ This project puts [Desktop Commander](https://github.com/wonderwhy-er/DesktopCom
 ## Reporting a vulnerability
 
 Please report vulnerabilities privately through **GitHub → Security → Report a vulnerability** on this repository, not in a public issue.
+
+## Updating older installations
+
+Versions before commit `50b28f4` accepted the `client_credentials` grant for dynamically registered clients. That allowed token issuance without owner consent. Update to the current version; this grant is now rejected. If you exposed an older version, stop the proxy, rotate `.oauth-signing-key`, and remove `.oauth-state.json` to revoke access and refresh tokens before restarting. Reconnect your OAuth clients afterward. Backups of these files remain sensitive.
+
+Only publish intended Git branches or clean source archives. Local application snapshots, `.git` directories copied from development machines, service logs, and migration backups may contain secrets even when the release branch is clean.

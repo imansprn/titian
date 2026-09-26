@@ -1,0 +1,16 @@
+instances/
+logs/
+runtime/
+launchagents/
+__pycache__/
+funnel-before.json
+legacy-auth-proxy.before.js
+archives/
+.manage.lock
+dependencies/node_modules/
+transaction/
+transaction.tmp/
+.runtime-stage-*/
+
+manager.json
+projects.json

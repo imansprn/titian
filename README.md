@@ -41,8 +41,8 @@ dc-wrapper.js → @wonderwhy-er/desktop-commander
 ## Setup
 
 ```bash
-git clone <this-repo> titian && cd titian
-npm run setup                 # installs the bridge's dependencies
+git clone https://github.com/imansprn/titian.git && cd titian
+npm run setup                 # installs the bridge and pinned Desktop Commander dependencies
 cp .env.example .env          # then set MCP_PUBLIC_BASE
 ```
 
@@ -80,7 +80,7 @@ All settings are environment variables. See [`.env.example`](.env.example) for t
 | `MCP_DATA_DIR` | repo root | Where secrets and OAuth state live |
 | `MCP_OAUTH_PIN` | auto-generated | Consent PIN |
 | `MCP_AUTH_TOKEN` | unset | Optional static bearer token |
-| `DESKTOP_COMMANDER_BIN` | `npx -y …` | Use a globally installed Desktop Commander |
+| `DESKTOP_COMMANDER_BIN` | pinned local package | Use a globally installed Desktop Commander |
 
 ## Health checks
 
@@ -91,7 +91,7 @@ All settings are environment variables. See [`.env.example`](.env.example) for t
 Tests use the built-in `node:test` runner, so there are no extra dependencies:
 
 ```bash
-npm run setup   # once, for the bridge's MCP SDK
+npm run setup   # once, for the pinned dependencies
 npm test
 ```
 
@@ -99,6 +99,10 @@ npm test
 - `http-bridge/tests/` starts the real bridge against a fake stdio MCP server.
 
 Set `TEST_VERBOSE=1` to see the proxy's request log.
+
+## Per-project services (macOS)
+
+The optional [project manager](project-mcp/README.md) runs independent project instances behind one HTTPS gateway. It includes initialization, launchd configuration, transaction recovery, and a pinned runtime. Terminal access remains under your OS account; project roots are not an OS sandbox.
 
 ## License
 

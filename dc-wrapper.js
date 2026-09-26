@@ -7,14 +7,15 @@
  * orphaned desktop-commander processes.
  *
  * Set DESKTOP_COMMANDER_BIN to a globally installed `desktop-commander` binary
- * to skip npx; otherwise `npx -y @wonderwhy-er/desktop-commander` is used.
+ * to skip npx; otherwise the pinned local dependency is run with the current Node binary.
  */
 const { spawn } = require('child_process');
+const path = require('path');
 
 const bin = process.env.DESKTOP_COMMANDER_BIN;
 const [cmd, args] = bin
   ? [bin, ['--no-onboarding']]
-  : ['npx', ['-y', '@wonderwhy-er/desktop-commander', '--no-onboarding']];
+  : [process.execPath, [path.join(__dirname, 'project-mcp/dependencies/node_modules/@wonderwhy-er/desktop-commander/dist/index.js'), '--no-onboarding']];
 
 const child = spawn(cmd, args, { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
 

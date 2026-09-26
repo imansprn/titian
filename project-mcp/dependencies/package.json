@@ -1,0 +1,13 @@
+{
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@wonderwhy-er/desktop-commander": "0.2.51"
+  },
+  "private": true,
+  "overrides": {
+    "sharp": "^0.35.4",
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
+  }
+}

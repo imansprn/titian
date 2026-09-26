@@ -1,5 +1,7 @@
 # Secrets & runtime state (never commit)
 .env
+.env.*
+!.env.example
 .mcp-token
 .oauth-client-id
 .oauth-client-secret
@@ -20,3 +22,8 @@ node_modules/
 # Local tooling
 .claude/
 .DS_Store
+
+# Imported machine-specific documentation and service configuration
+/README-MCP.md
+/launchd-backup/
+/project-mcp/projects.json
