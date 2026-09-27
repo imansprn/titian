@@ -27,3 +27,9 @@ node_modules/
 /README-MCP.md
 /launchd-backup/
 /project-mcp/projects.json
+
+# Unified machine state and migration-only legacy folders
+.titian/
+__pycache__/
+project-mcp/
+http-bridge/

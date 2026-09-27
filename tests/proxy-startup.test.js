@@ -6,7 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { loadProxy, listen, close, register, pkcePair, startAuthorization, submitConsent } = require('./support');
 
-const PROXY = path.join(__dirname, '..', 'mcp-auth-proxy.js');
+const PROXY = path.join(__dirname, '..', 'src/auth/proxy.cjs');
 
 describe('startup configuration', () => {
   it('exits with an error when MCP_PUBLIC_BASE is missing', () => {

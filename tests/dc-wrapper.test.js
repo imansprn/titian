@@ -7,7 +7,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 
-const WRAPPER = path.join(__dirname, '..', 'dc-wrapper.js');
+const WRAPPER = path.join(__dirname, '..', 'src/bridge/stdio.cjs');
 
 // Fake desktop-commander: records its argv and pids, spawns a grandchild in the
 // same process group, then echoes stdin to stdout (or exits early if asked).

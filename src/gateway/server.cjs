@@ -2,10 +2,11 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const DATA_DIR = process.env.TITIAN_DATA_DIR || path.resolve(__dirname, '../../.titian');
 function projectBySlug(slug) {
   // The manager atomically replaces this small registry. Read on lookup so
   // add/remove takes effect without restarting or dropping other sessions.
-  return JSON.parse(fs.readFileSync(path.join(__dirname, 'projects.json'), 'utf8')).find(p => p.slug === slug && p.enabled !== false);
+  return JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'projects.json'), 'utf8')).find(p => p.slug === slug && p.enabled !== false);
 }
 function route(pathname) {
   const scoped = pathname.match(/^\/projects\/([^/]+)(\/.*)?$/);
@@ -18,8 +19,9 @@ function route(pathname) {
     const project = projectBySlug(metadata[2]);
     return project ? { port: project.authPort, path: '/.well-known/' + metadata[1] } : null;
   }
-  // Preserve the original Gobliggg connection and its OAuth issuer.
-  return { port: 8000, path: pathname };
+  // Preserve explicitly migrated root connections and their OAuth issuer.
+  const rootProject = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'projects.json'), 'utf8')).find(p => p.rootRoute && p.enabled !== false);
+  return rootProject ? { port: rootProject.authPort, path: pathname } : null;
 }
 const server = http.createServer((req, res) => {
   let url;
@@ -46,4 +48,6 @@ const server = http.createServer((req, res) => {
 });
 server.on('clientError', (error, socket) => { console.error('clientError', error.code, error.message); socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); });
 server.requestTimeout = 0;
-server.listen(Number(process.env.MCP_GATEWAY_PORT || 8300), '127.0.0.1', () => console.error('Project MCP gateway listening on 127.0.0.1:8300'));
+if (require.main === module) server.listen(Number(process.env.MCP_GATEWAY_PORT || 8300), '127.0.0.1', () => console.error('Project MCP gateway listening on 127.0.0.1:8300'));
+
+module.exports = { server };

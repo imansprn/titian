@@ -28,7 +28,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
-const BASE_DIR = process.env.MCP_DATA_DIR || __dirname;
+const BASE_DIR = process.env.MCP_DATA_DIR || process.env.TITIAN_DATA_DIR || path.resolve(__dirname, '../../.titian');
 const LISTEN_HOST = process.env.MCP_PROXY_HOST || '127.0.0.1';
 const LISTEN_PORT = parseInt(process.env.MCP_PROXY_PORT || '8000', 10);
 const UPSTREAM_HOST = process.env.MCP_UPSTREAM_HOST || '127.0.0.1';

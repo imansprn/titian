@@ -31,7 +31,7 @@ import {
 const HOST = process.env.MCP_BRIDGE_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.MCP_BRIDGE_PORT || '8001', 10);
 const STDIO_COMMAND = process.env.MCP_STDIO_COMMAND || process.execPath;
-const STDIO_WRAPPER = process.env.MCP_STDIO_WRAPPER || fileURLToPath(new URL('../dc-wrapper.js', import.meta.url));
+const STDIO_WRAPPER = process.env.MCP_STDIO_WRAPPER || fileURLToPath(new URL('./stdio.cjs', import.meta.url));
 
 const log = (...a) => console.error(`[mcp-http-bridge]`, ...a);
 
@@ -44,6 +44,8 @@ const stdioTransport = new StdioClientTransport({
   command: STDIO_COMMAND,
   args: [STDIO_WRAPPER],
   stderr: 'inherit',
+  env: { ...process.env },
+  cwd: process.env.MCP_PROJECT_ROOT,
 });
 await stdioClient.connect(stdioTransport);
 log('connected to Desktop Commander over stdio');
@@ -54,7 +56,7 @@ log('connected to Desktop Commander over stdio');
 let toolCatalog = [];
 let resourceCatalog = [];
 let promptCatalog = [];
-try { toolCatalog = (await stdioClient.listTools()).tools || []; log(`loaded ${toolCatalog.length} tools`); }
+try { toolCatalog = ((await stdioClient.listTools()).tools || []).filter(t => t.name !== 'set_config_value').map(t => ({...t, description: `[${process.env.MCP_SERVER_LABEL}; roots: ${process.env.MCP_PROJECT_ROOTS}] ${t.description || ''}`})); log(`loaded ${toolCatalog.length} tools`); }
 catch (e) { log('listTools failed:', e.message); }
 try { resourceCatalog = (await stdioClient.listResources()).resources || []; log(`loaded ${resourceCatalog.length} resources`); }
 catch (e) { log('listResources failed:', e.message); }
@@ -67,16 +69,17 @@ catch (e) { log('listPrompts failed:', e.message); }
 // ---------------------------------------------------------------------------
 function makeSessionServer() {
   const server = new Server(
-    { name: 'desktop-commander', version: '0.2.47' },
-    { capabilities: { tools: {}, resources: {}, prompts: {} } },
+    { name: process.env.MCP_PROJECT_SLUG || 'titian', version: '1.0.0' },
+    { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: `This server handles ${process.env.MCP_SERVER_LABEL}. Project roots: ${process.env.MCP_PROJECT_ROOTS}. Use absolute file paths. Run commands in the appropriate project root. Terminal access runs as the macOS user and is not sandboxed.` },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolCatalog }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    if (!toolCatalog.some(t => t.name === name)) throw new Error('Tool unavailable for project server');
     const result = await stdioClient.callTool({ name, arguments: args });
-    return { content: result.content, isError: result.isError ?? false };
+    return { ...result, isError: result.isError ?? false };
   });
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: resourceCatalog }));

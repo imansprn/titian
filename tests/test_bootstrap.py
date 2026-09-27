@@ -6,6 +6,9 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/manager'))
 import manage
 
 class Bootstrap(unittest.TestCase):
@@ -24,7 +27,7 @@ class Bootstrap(unittest.TestCase):
         manage.initialize(self.args)
         self.assertEqual(key.read_text(), 'test-secret')
         self.assertEqual(manage.load()[0]['slug'], 'demo')
-        self.assertTrue((self.root / 'launchagents/com.iman.project-mcp.gateway.plist').exists())
+        self.assertTrue((self.root / 'launchagents/com.titian.gateway.plist').exists())
         self.assertEqual(manage.public_origin(), 'https://example.test')
 
     def test_invalid_origin_does_not_create_registry(self):
@@ -43,7 +46,7 @@ class Bootstrap(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'init --origin'): manage.load()
 
     def test_first_runtime_install_and_reinstall_protection(self):
-        spec = importlib.util.spec_from_file_location('runtime_setup', Path(__file__).with_name('setup.py'))
+        spec = importlib.util.spec_from_file_location('runtime_setup', Path(__file__).resolve().parents[1] / 'src/manager/runtime.py')
         setup = importlib.util.module_from_spec(spec); spec.loader.exec_module(setup)
         def stage():
             p = self.root / 'stage'; p.mkdir(); (p / 'marker').write_text('built'); return p

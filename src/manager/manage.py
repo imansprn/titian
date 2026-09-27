@@ -15,7 +15,8 @@ import time
 import urllib.request
 import urllib.parse
 
-ROOT = Path(__file__).resolve().parent
+APP_ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get('TITIAN_DATA_DIR', APP_ROOT / '.titian')).expanduser().resolve()
 AGENTS = Path.home() / 'Library/LaunchAgents'
 DOMAIN = f'gui/{os.getuid()}'
 def settings():
@@ -43,7 +44,7 @@ def public_origin():
             origin = f'{url.scheme}://{url.netloc}'
     url = urllib.parse.urlsplit(origin or '')
     if url.scheme != 'https' or not url.hostname or url.path not in ['', '/'] or url.query or url.fragment or url.username or url.password:
-        raise ValueError('Run mcp-project init --origin https://your-host.example first.')
+        raise ValueError('Run titian init --origin https://your-host.example first.')
     return origin.rstrip('/')
 
 
@@ -69,9 +70,9 @@ def initialize(args):
         (ROOT / name).mkdir(exist_ok=True, mode=0o700)
     AGENTS.mkdir(parents=True, exist_ok=True)
     if not (ROOT / 'projects.json').exists(): save([])
-    name = 'com.iman.project-mcp.gateway'
-    data = plistlib.dumps({'Label': name, 'ProgramArguments': [node_binary(), str(ROOT / 'gateway.cjs')],
-        'WorkingDirectory': str(ROOT), 'EnvironmentVariables': {'PATH': service_path()},
+    name = 'com.titian.gateway'
+    data = plistlib.dumps({'Label': name, 'ProgramArguments': [node_binary(), str(APP_ROOT / 'src/gateway/server.cjs')],
+        'WorkingDirectory': str(ROOT), 'EnvironmentVariables': {'PATH': service_path(), 'TITIAN_DATA_DIR': str(ROOT)},
         'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 10,
         'StandardOutPath': str(ROOT / 'logs/gateway.log'), 'StandardErrorPath': str(ROOT / 'logs/gateway.err.log')})
     atomic(ROOT / 'launchagents' / (name + '.plist'), data, 0o644)
@@ -87,7 +88,7 @@ def initialize(args):
 
 def load():
     path = ROOT / 'projects.json'
-    if not path.exists(): raise ValueError('Run mcp-project init --origin https://your-host.example first.')
+    if not path.exists(): raise ValueError('Run titian init --origin https://your-host.example first.')
     return json.loads(path.read_text())
 
 
@@ -106,7 +107,7 @@ def save(projects):
 
 
 def label(slug, part):
-    return f'com.iman.project-mcp.{slug}.{part}'
+    return f'com.titian.{slug}.{part}'
 
 
 def launch(*args, check=True):
@@ -129,22 +130,27 @@ def loaded(name):
 def stop(name):
     if loaded(name):
         launch('bootout', f'{DOMAIN}/{name}')
+        deadline = time.monotonic() + 15
+        while loaded(name):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f'Service {name} did not finish stopping.')
+            time.sleep(0.1)
 
 
 def plist_for(project, part):
     slug = project['slug']
     inst = ROOT / 'instances' / slug
     if part == 'bridge':
-        script = ROOT / 'runtime/bridge/bridge.js'
+        script = ROOT / 'runtime/bridge/server.mjs'
         cwd = project['roots'][0]
         env = {'MCP_BRIDGE_PORT': str(project['bridgePort']),
-               'MCP_STDIO_WRAPPER': str(ROOT / 'runtime/dc-wrapper.js'),
+               'MCP_STDIO_WRAPPER': str(ROOT / 'runtime/bridge/stdio.cjs'),
                'DESKTOP_COMMANDER_BIN': str(ROOT / 'runtime/dc/dist/index.js'),
                'MCP_DC_CONFIG_DIR': str(inst), 'MCP_PROJECT_ROOT': cwd,
                'MCP_PROJECT_ROOTS': json.dumps(project['roots']),
                'MCP_PROJECT_SLUG': slug, 'MCP_SERVER_LABEL': project['name']}
     else:
-        script = ROOT / 'runtime/auth-proxy.cjs'
+        script = ROOT / 'runtime/auth/proxy.cjs'
         cwd = str(ROOT)
         env = {'MCP_PROXY_PORT': str(project['authPort']),
                'MCP_UPSTREAM_PORT': str(project['bridgePort']),
@@ -219,9 +225,9 @@ def add(args, projects):
             raise ValueError(f'Layanan {name} sudah ada; tidak ditimpa.')
     if args.dry_run:
         print(json.dumps(project, indent=2)); return
-    for path in ['runtime/bridge/bridge.js', 'runtime/auth-proxy.cjs', 'runtime/dc/dist/index.js']:
+    for path in ['runtime/bridge/server.mjs', 'runtime/auth/proxy.cjs', 'runtime/dc/dist/index.js']:
         if not (ROOT / path).is_file():
-            raise ValueError('Runtime belum tersedia. Jalankan setup.py terlebih dahulu.')
+            raise ValueError('Runtime belum tersedia. Jalankan titian runtime install terlebih dahulu.')
     tx = snapshot(projects, project)
     try:
         inst.mkdir(mode=0o700)
@@ -260,7 +266,7 @@ def snapshot(projects, project):
     """Persist recovery data before changing services, registry or files."""
     tx = ROOT / 'transaction'
     if tx.exists():
-        raise RuntimeError('Transaksi belum selesai. Jalankan mcp-project recover.')
+        raise RuntimeError('Transaksi belum selesai. Jalankan titian recover.')
     stage = ROOT / 'transaction.tmp'
     if stage.exists():
         shutil.rmtree(stage)
@@ -390,7 +396,8 @@ def doctor(args, projects):
             except OSError: checks.append((part, False))
         try:
             # No credentials or project data leave the machine in this diagnostic.
-            path = '/.well-known/oauth-protected-resource/projects/' + p['slug'] + '/mcp'
+            resource_path = urllib.parse.urlsplit(p['url']).path
+            path = '/.well-known/oauth-protected-resource' + (resource_path if resource_path != '/mcp' else '')
             with urllib.request.urlopen('http://127.0.0.1:8300' + path, timeout=3) as r:
                 checks.append(('oauth-routing', json.load(r)['resource'] == p['url']))
             data = json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'doctor','version':'1'}}}).encode()
@@ -437,7 +444,7 @@ def rotate_logs(args):
 def status_or_restart(args, projects):
     if args.project not in ['all', 'gateway'] + [p['slug'] for p in projects]:
         raise ValueError(f'Project {args.project} tidak ditemukan.')
-    labels = ['com.iman.project-mcp.gateway'] if args.project in ['all', 'gateway'] else []
+    labels = ['com.titian.gateway'] if args.project in ['all', 'gateway'] else []
     for project in projects:
         if args.project in ['all', project['slug']]:
             labels += [label(project['slug'], part) for part in ['auth', 'bridge']]
@@ -454,7 +461,7 @@ def status_or_restart(args, projects):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Kelola MCP per project. Folder/kode project tidak dihapus.')
+    parser = argparse.ArgumentParser(description='Manage Titian projects without deleting their source folders.', epilog='Runtime commands: titian runtime install | check | update')
     sub = parser.add_subparsers(dest='action', required=True)
     init = sub.add_parser('init', help='Initialize local registry and gateway configuration')
     init.add_argument('--origin', required=True)
@@ -475,6 +482,7 @@ def main():
     for action in ['status', 'restart']:
         p = sub.add_parser(action); p.add_argument('project', nargs='?', default='all')
     args = parser.parse_args()
+    ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (ROOT / '.manage.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if args.action == 'init': initialize(args); return

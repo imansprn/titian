@@ -1,16 +1,29 @@
 {
   "name": "titian",
   "version": "1.0.0",
-  "description": "A narrow bridge from ChatGPT & Claude to your desktop: Desktop Commander MCP over Streamable HTTP behind an OAuth 2.1 gate.",
+  "description": "Manage independent desktop MCP projects behind one authenticated gateway.",
   "license": "MIT",
   "private": true,
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "setup": "npm --prefix http-bridge ci && npm --prefix project-mcp/dependencies ci",
-    "start:bridge": "node --env-file=.env http-bridge/bridge.js",
-    "start:proxy": "node --env-file=.env mcp-auth-proxy.js",
-    "test": "node --test tests/*.test.js http-bridge/tests/*.test.mjs"
+    "setup": "npm ci",
+    "test": "node --test tests/*.test.js tests/bridge/*.test.mjs",
+    "test:manager": "python3 tests/test_bootstrap.py && python3 tests/test_failures.py",
+    "test:dependencies": "node tests/dependencies.cjs"
+  },
+  "bin": {
+    "titian": "bin/titian"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@wonderwhy-er/desktop-commander": "0.2.51"
+  },
+  "overrides": {
+    "sharp": "^0.35.4",
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   }
 }

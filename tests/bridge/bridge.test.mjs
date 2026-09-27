@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ECHO_SCHEMA } from './fixtures/echo-schema.mjs';
 
-const BRIDGE = fileURLToPath(new URL('../bridge.js', import.meta.url));
+const BRIDGE = fileURLToPath(new URL('../../src/bridge/server.mjs', import.meta.url));
 const FAKE_SERVER = fileURLToPath(new URL('./fixtures/fake-stdio-server.mjs', import.meta.url));
 
 function freePort() {

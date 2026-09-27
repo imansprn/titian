@@ -7,13 +7,13 @@ const path = require('node:path');
 // The proxy logs every request to stderr; keep test output readable unless asked.
 if (!process.env.TEST_VERBOSE) console.error = () => {};
 
-// mcp-auth-proxy.js reads its config at require time, so each test file sets the
+// The auth proxy reads its config at require time, so each test file sets the
 // env it needs and loads the module once (node --test runs files in separate processes).
 function loadProxy(env = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'titian-test-'));
   for (const k of ['MCP_AUTH_TOKEN', 'MCP_OAUTH_SIGNING_KEY', 'MCP_OAUTH_PIN']) delete process.env[k];
   Object.assign(process.env, { MCP_PUBLIC_BASE: 'https://titian.test', MCP_DATA_DIR: dataDir, ...env });
-  const proxy = require(process.env.TITIAN_PROXY_MODULE || '../mcp-auth-proxy.js');
+  const proxy = require('../src/auth/proxy.cjs');
   return { proxy, dataDir };
 }
 

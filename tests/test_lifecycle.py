@@ -8,11 +8,12 @@ import tempfile
 import urllib.error
 import urllib.request
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1] / '.titian'
+MANAGER = Path(__file__).resolve().parents[1] / 'src/manager/manage.py'
 SLUG = 'manager-lifecycle-check'
 
 def run(*args, ok=True, env=None):
-    result = subprocess.run([sys.executable, str(ROOT / 'manage.py'), *args], text=True, capture_output=True, env=env)
+    result = subprocess.run([sys.executable, str(MANAGER), *args], text=True, capture_output=True, env=env)
     assert (result.returncode == 0) == ok, result.stdout + result.stderr
     return result
 
@@ -39,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix='mcp-manager-test-') as tmp:
         run('add', 'Duplicate', str(first), '--slug', SLUG, ok=False)
         assert status('/projects/' + SLUG + '/mcp') == 401
         assert status('/.well-known/oauth-protected-resource/projects/' + SLUG + '/mcp') == 200
-        result = subprocess.run([sys.executable, str(ROOT / 'verify.py')], env={**os.environ, 'MCP_TEST_PROJECT': SLUG}, text=True, capture_output=True)
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('verify_live.py'))], env={**os.environ, 'MCP_TEST_PROJECT': SLUG}, text=True, capture_output=True)
         assert result.returncode == 0, result.stdout + result.stderr
         print(result.stdout.strip())
         run('remove', SLUG, '--dry-run')
@@ -53,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix='mcp-manager-test-') as tmp:
         archives = list((ROOT / 'archives').glob(SLUG + '-*'))
         assert any((p / 'state/.oauth-signing-key').exists() for p in archives)
         for part in ['auth', 'bridge']:
-            label = f'com.iman.project-mcp.{SLUG}.{part}'
+            label = f'com.titian.{SLUG}.{part}'
             assert not (Path.home() / 'Library/LaunchAgents' / (label + '.plist')).exists()
             assert subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/{label}'], capture_output=True).returncode != 0
         run('remove', SLUG, ok=False)

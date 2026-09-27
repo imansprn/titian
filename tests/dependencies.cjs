@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
-const sharp = require('./dependencies/node_modules/sharp');
-const ExcelJS = require('./dependencies/node_modules/exceljs');
+const sharp = require('../node_modules/sharp');
+const ExcelJS = require('../node_modules/exceljs');
 (async () => {
   const png = await sharp({create:{width:8,height:6,channels:3,background:'#2468ac'}}).png().toBuffer();
   const metadata = await sharp(png).metadata();

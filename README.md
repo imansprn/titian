@@ -1,109 +1,85 @@
-# titian
+# Titian
 
 [![CI](https://github.com/imansprn/titian/actions/workflows/ci.yml/badge.svg)](https://github.com/imansprn/titian/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/imansprn/titian)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D22-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
-[![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-6f42c1)](https://modelcontextprotocol.io)
-[![OAuth 2.1](https://img.shields.io/badge/OAuth-2.1%20%2B%20PKCE-0a84ff)](SECURITY.md)
 
-*titian* (Indonesian): a narrow footbridge across a stream.
+Manage desktop MCP access for one project or many. Titian gives each project its own OAuth credentials, processes and folder configuration, behind one HTTPS gateway. Connect from ChatGPT, Claude, or another remote MCP client.
 
-A narrow bridge from ChatGPT & Claude to your desktop. Run [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) on your own machine and use it from **ChatGPT** and **Claude** remote MCP connectors, over HTTPS and behind an OAuth 2.1 login.
+Titian means a narrow footbridge in Indonesian.
 
-> [!WARNING]
-> Desktop Commander has **full filesystem and terminal access** as your user.
-> This project makes it reachable from the internet. Read [SECURITY.md](SECURITY.md) before you run it.
+> Desktop Commander can read files and run commands with your account's permissions. Project folders are not an OS sandbox. Read [SECURITY.md](SECURITY.md) before exposing the gateway.
 
-## How it works
+## Install
 
-```
-ChatGPT / Claude
-      │  HTTPS (e.g. Tailscale Funnel)
-      ▼
-mcp-auth-proxy.js   :8000   OAuth 2.1 server (DCR + PKCE + refresh) and auth gate for /mcp
-      │  http://127.0.0.1
-      ▼
-http-bridge/bridge.js :8001  Streamable HTTP ⇄ stdio bridge (official MCP SDK)
-      │  stdio
-      ▼
-dc-wrapper.js → @wonderwhy-er/desktop-commander
+The service manager requires **macOS, Python 3.10+, Node.js 22+ and npm**. Core protocol tests also run on Linux.
+
+```sh
+git clone https://github.com/imansprn/titian.git
+cd titian
+npm ci
+./bin/titian init --origin https://your-host.example
+./bin/titian runtime install
+./bin/titian init --origin https://your-host.example --start-gateway
+./bin/titian add "My project" /absolute/path/to/project
 ```
 
-- **`mcp-auth-proxy.js`** is a zero-dependency OAuth 2.1 authorization server (RFC 7591 dynamic client registration, RFC 8414/9728 metadata, authorization code + PKCE S256, rotating refresh tokens). Approving a client requires a **consent PIN** that only you know. Authenticated requests are proxied to the bridge.
-- **`http-bridge/bridge.js`** exposes the stdio server as MCP Streamable HTTP. Sessions are keyed by `Mcp-Session-Id` rather than the TCP connection, so clients that open a new connection per request keep working.
-- **`dc-wrapper.js`** starts Desktop Commander in its own process group, so the whole process tree is cleaned up on shutdown.
+Publish loopback port **8300** through your HTTPS proxy. With Tailscale Funnel, use your machine's HTTPS hostname as the origin above, then run:
 
-## Requirements
-
-- Node.js 22 or newer
-- A way to publish `127.0.0.1:8000` over HTTPS. [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) is the easiest; any TLS reverse proxy works.
-
-## Setup
-
-```bash
-git clone https://github.com/imansprn/titian.git && cd titian
-npm run setup                 # installs the bridge and pinned Desktop Commander dependencies
-cp .env.example .env          # then set MCP_PUBLIC_BASE
+```sh
+tailscale funnel --bg 8300
 ```
 
-Start the two services, each in its own terminal (or under launchd/systemd/pm2):
+Add the project URL printed by `titian add` to your MCP client using OAuth. Approve with the PIN in `.titian/instances/<slug>/.oauth-consent-pin`. Titian does not print secret values.
 
-```bash
-npm run start:bridge
-npm run start:proxy
+To use `titian` from any directory, add a symlink in a directory on PATH:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+ln -s "$(pwd)/bin/titian" "$HOME/.local/bin/titian"
 ```
 
-On first start, the proxy generates `.oauth-signing-key` and `.oauth-consent-pin` (mode `0600`) in the repo root, or in `MCP_DATA_DIR` if you set it. Read the PIN with `cat .oauth-consent-pin`.
+## Manage projects
 
-Publish the proxy, for example:
-
-```bash
-tailscale funnel --bg 8000
+```sh
+titian add "Web and mobile" /path/to/web /path/to/mobile --slug example
+titian list
+titian doctor
+titian update example /path/to/new-root
+titian disable example
+titian enable example
+titian restart example
+titian remove example
 ```
 
-## Connecting clients
+Removing a project stops its services and archives its OAuth state. It never deletes the project's source folders. A single project uses exactly the same setup and commands.
 
-Use `${MCP_PUBLIC_BASE}/mcp` as the connector URL.
+## Architecture
 
-- **ChatGPT** (custom connector, OAuth): ChatGPT registers itself, then opens the consent page. Enter your PIN and click **Approve**.
-- **Claude** (custom connector): same flow. Clients that can't do OAuth can send `Authorization: Bearer <MCP_AUTH_TOKEN>` if you set a static token.
+```text
+MCP clients → HTTPS → gateway :8300
+                       ├── project A → OAuth proxy → MCP bridge → Desktop Commander
+                       └── project B → OAuth proxy → MCP bridge → Desktop Commander
+```
 
-## Configuration
+Source is in `src/`, the CLI in `bin/`, and all dependencies in the root package. Local state and generated runtime live in ignored `.titian/`. Each project has its own `/projects/<slug>/mcp` URL. Existing root `/mcp` connections can be preserved during migration.
 
-All settings are environment variables. See [`.env.example`](.env.example) for the full list with defaults.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `MCP_PUBLIC_BASE` | **required** | Public HTTPS origin, used as the OAuth issuer |
-| `MCP_PROXY_PORT` | `8000` | Auth proxy listen port |
-| `MCP_BRIDGE_PORT` / `MCP_UPSTREAM_PORT` | `8001` | Bridge port (must match) |
-| `MCP_DATA_DIR` | repo root | Where secrets and OAuth state live |
-| `MCP_OAUTH_PIN` | auto-generated | Consent PIN |
-| `MCP_AUTH_TOKEN` | unset | Optional static bearer token |
-| `DESKTOP_COMMANDER_BIN` | pinned local package | Use a globally installed Desktop Commander |
-
-## Health checks
-
-`GET /healthz` on both the proxy and the bridge returns `ok`.
+- [Operations and configuration](docs/operations.md)
+- [Architecture](docs/architecture.md)
+- [Migration from the previous layout](docs/migration.md)
+- [Security](SECURITY.md)
 
 ## Development
 
-Tests use the built-in `node:test` runner, so there are no extra dependencies:
-
-```bash
-npm run setup   # once, for the pinned dependencies
+```sh
+npm ci
 npm test
+npm run test:manager
+npm run test:dependencies
+npm audit
 ```
 
-- `tests/` covers the auth proxy (helpers, the full OAuth flow, startup and secret bootstrapping) and `dc-wrapper.js` (stdio piping, process-group cleanup).
-- `http-bridge/tests/` starts the real bridge against a fake stdio MCP server.
-
-Set `TEST_VERBOSE=1` to see the proxy's request log.
-
-## Per-project services (macOS)
-
-The optional [project manager](project-mcp/README.md) runs independent project instances behind one HTTPS gateway. It includes initialization, launchd configuration, transaction recovery, and a pinned runtime. Terminal access remains under your OS account; project roots are not an OS sandbox.
+Tests use temporary state. Live lifecycle verification is opt-in; see the operations guide. CI checks Linux Node 22/24/26 and macOS Node 24, including first-install runtime construction.
 
 ## License
 
-[MIT](LICENSE). Desktop Commander is a separate project with its own license.
+[MIT](LICENSE). Desktop Commander and other dependencies retain their own licenses.

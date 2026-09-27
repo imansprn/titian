@@ -13,7 +13,8 @@ import tempfile
 import time
 import manage
 
-ROOT = Path(__file__).resolve().parent
+APP_ROOT = Path(__file__).resolve().parents[2]
+ROOT = manage.ROOT
 EXPECTED = {'@wonderwhy-er/desktop-commander': '0.2.51', '@modelcontextprotocol/sdk': '1.30.0'}
 
 
@@ -24,10 +25,10 @@ def replace_once(text, old, new):
 
 
 def build():
-    deps = ROOT / 'dependencies/node_modules'
+    deps = APP_ROOT / 'node_modules'
     for name, version in EXPECTED.items():
         actual = json.loads((deps / name / 'package.json').read_text())['version']
-        if actual != version: raise RuntimeError(f'{name}: expected {version}, found {actual}. Run npm ci --prefix dependencies.')
+        if actual != version: raise RuntimeError(f'{name}: expected {version}, found {actual}. Run npm ci at the repository root.')
     stage = Path(tempfile.mkdtemp(prefix='.runtime-stage-', dir=ROOT))
     try:
         dc = deps / '@wonderwhy-er/desktop-commander'
@@ -39,11 +40,11 @@ def build():
         config = stage / 'dc/dist/config.js'
         config.write_text(replace_once(config.read_text(), "const CONFIG_DIR = path.join(USER_HOME, '.claude-server-commander');", "const CONFIG_DIR = process.env.MCP_DC_CONFIG_DIR || path.join(USER_HOME, '.claude-server-commander');"))
         (stage / 'bridge').mkdir()
-        (stage / 'bridge/package.json').write_text('{"type":"module","private":true}')
-        shutil.copy2(ROOT / 'src/bridge.mjs', stage / 'bridge/bridge.js')
-        shutil.copy2(ROOT / 'src/auth-proxy.cjs', stage / 'auth-proxy.cjs')
-        shutil.copy2(ROOT / 'src/dc-wrapper.cjs', stage / 'dc-wrapper.js')
-        for script in ['bridge/bridge.js', 'auth-proxy.cjs', 'dc-wrapper.js', 'dc/dist/config.js']:
+        (stage / 'auth').mkdir()
+        shutil.copy2(APP_ROOT / 'src/bridge/server.mjs', stage / 'bridge/server.mjs')
+        shutil.copy2(APP_ROOT / 'src/auth/proxy.cjs', stage / 'auth/proxy.cjs')
+        shutil.copy2(APP_ROOT / 'src/bridge/stdio.cjs', stage / 'bridge/stdio.cjs')
+        for script in ['bridge/server.mjs', 'auth/proxy.cjs', 'bridge/stdio.cjs', 'dc/dist/config.js']:
             subprocess.run([manage.node_binary(), '--check', str(stage / script)], check=True)
         (stage / 'build.json').write_text(json.dumps(EXPECTED, indent=2))
         return stage
@@ -89,16 +90,17 @@ def main():
     mode.add_argument('--install', action='store_true', help='Install a first runtime without starting services')
     mode.add_argument('--activate', action='store_true', help='Restart active project services using the checked runtime')
     args = parser.parse_args()
+    ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (ROOT / '.manage.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if (ROOT / 'transaction').exists(): raise RuntimeError('Run mcp-project recover first.')
+        if (ROOT / 'transaction').exists(): raise RuntimeError('Run titian recover first.')
         stage = build()
         if args.install:
             if (ROOT / 'runtime').exists():
                 shutil.rmtree(stage)
                 raise RuntimeError('Runtime already exists; use --activate to update it.')
             os.replace(stage, ROOT / 'runtime')
-            print('Runtime installed. Use mcp-project add to start a project.')
+            print('Runtime installed. Use titian add to start a project.')
         elif args.activate: activate(stage)
         else:
             shutil.rmtree(stage)

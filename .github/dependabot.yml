@@ -1,11 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: npm
-    directory: /http-bridge
-    schedule:
-      interval: weekly
-  - package-ecosystem: npm
-    directory: /project-mcp/dependencies
+    directory: /
     schedule:
       interval: weekly
   - package-ecosystem: github-actions

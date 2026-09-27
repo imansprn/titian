@@ -6,6 +6,9 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/manager'))
 import manage
 
 
@@ -18,9 +21,9 @@ class Transactions(unittest.TestCase):
                         patch.object(manage, 'loaded', return_value=False), patch.object(manage, 'launch'),
                         patch.object(manage, 'stop'), patch.object(manage, 'wait_health')]
         for p in self.patches: p.start(); self.addCleanup(p.stop)
-        for name in ['agents','launchagents','instances/demo','logs','code','runtime/bridge','runtime/dc/dist']:
+        for name in ['agents','launchagents','instances/demo','logs','code','runtime/bridge','runtime/auth','runtime/dc/dist']:
             (root / name).mkdir(parents=True, exist_ok=True)
-        for name in ['runtime/auth-proxy.cjs','runtime/bridge/bridge.js','runtime/dc/dist/index.js']:
+        for name in ['runtime/auth/proxy.cjs','runtime/bridge/server.mjs','runtime/dc/dist/index.js']:
             (root / name).write_text('// fixture')
         self.root = root
         self.project = {'slug':'demo','name':'Demo','roots':[str(root / 'code')],'bridgePort':8107,'authPort':8108,'url':'https://example.test/projects/demo/mcp'}
@@ -104,7 +107,7 @@ class Transactions(unittest.TestCase):
 
 class Build(unittest.TestCase):
     def test_patch_fails_closed_on_source_drift(self):
-        spec=importlib.util.spec_from_file_location('runtime_setup',Path(__file__).with_name('setup.py'))
+        spec=importlib.util.spec_from_file_location('runtime_setup',Path(__file__).resolve().parents[1] / 'src/manager/runtime.py')
         setup=importlib.util.module_from_spec(spec);spec.loader.exec_module(setup)
         with self.assertRaises(RuntimeError): setup.replace_once('different source','expected','replacement')
         with self.assertRaises(RuntimeError): setup.replace_once('expected expected','expected','replacement')

@@ -15,7 +15,7 @@ const path = require('path');
 const bin = process.env.DESKTOP_COMMANDER_BIN;
 const [cmd, args] = bin
   ? [bin, ['--no-onboarding']]
-  : [process.execPath, [path.join(__dirname, 'project-mcp/dependencies/node_modules/@wonderwhy-er/desktop-commander/dist/index.js'), '--no-onboarding']];
+  : [process.execPath, [path.resolve(__dirname, '../../node_modules/@wonderwhy-er/desktop-commander/dist/index.js'), '--no-onboarding']];
 
 const child = spawn(cmd, args, { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
 

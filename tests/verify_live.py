@@ -3,7 +3,7 @@ No project files are modified; credentials are kept in memory.
 """
 from pathlib import Path
 import urllib.request, urllib.error, urllib.parse, json, secrets, hashlib, base64, re, sys, os, socket
-root=Path(__file__).resolve().parent
+root=Path(__file__).resolve().parents[1] / '.titian'
 base=sys.argv[1] if len(sys.argv)>1 else 'http://127.0.0.1:8300'
 if os.environ.get('MCP_TEST_RELAY_IP'):
  original_getaddrinfo=socket.getaddrinfo
@@ -33,7 +33,7 @@ def js(body):
  return json.loads(body)
 previous=None
 for project in projects:
- slug=project['slug'];prefix='/projects/'+slug;endpoint=prefix+'/mcp'
+ slug=project['slug'];endpoint=urllib.parse.urlsplit(project['url']).path;prefix=endpoint[:-4]
  status,h,b=request(endpoint)
  assert status==401,(slug,status,b)
  metadata_path=urllib.parse.urlsplit(re.search('resource_metadata="([^"]+)"',h['WWW-Authenticate'])[1]).path
@@ -82,9 +82,11 @@ for project in projects:
  for directory in project['roots']:
   result=rpc('tools/call',{'name':'list_directory','arguments':{'path':directory,'depth':1}})
   assert not result.get('isError'),(slug,result)
- denied=rpc('tools/call',{'name':'list_directory','arguments':{'path':str(root.parent),'depth':1}})
- assert denied.get('isError') or 'denied' in str(denied).lower() or 'not allowed' in str(denied).lower(),(slug,denied)
+ if '/' not in project['roots']:
+  denied=rpc('tools/call',{'name':'list_directory','arguments':{'path':str(root.parent),'depth':1}})
+  assert denied.get('isError') or 'denied' in str(denied).lower() or 'not allowed' in str(denied).lower(),(slug,denied)
  cwd=rpc('tools/call',{'name':'start_process','arguments':{'command':'pwd','timeout_ms':1000}})
  assert project['roots'][0] in str(cwd),(slug,cwd)
  request(endpoint,headers=headers,method='DELETE')
- print(slug+': PASS OAuth PKCE/refresh, metadata, project token, tools, roots, outside-root rejection, cwd',flush=True)
+ isolation = 'unrestricted migrated root' if '/' in project['roots'] else 'outside-root rejection'
+ print(slug+': PASS OAuth PKCE/refresh, metadata, project token, tools, roots, '+isolation+', cwd',flush=True)
