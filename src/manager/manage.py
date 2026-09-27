@@ -448,11 +448,16 @@ def status_or_restart(args, projects):
     for project in projects:
         if args.project in ['all', project['slug']]:
             labels += [label(project['slug'], part) for part in ['auth', 'bridge']]
+    ports = {'com.titian.gateway': 8300}
+    for project in projects:
+        ports.update({label(project['slug'], part): project[part + 'Port'] for part in ['auth', 'bridge']})
     for name in labels:
         if args.action == 'restart':
             if not loaded(name):
                 print('Skipped (disabled or unloaded)', name); continue
-            launch('kickstart', '-k', f'{DOMAIN}/{name}'); print('Restarted', name)
+            launch('kickstart', '-k', f'{DOMAIN}/{name}')
+            wait_health(ports[name])
+            print('Restarted', name)
         else:
             result = launch('print', f'{DOMAIN}/{name}', check=False)
             details = [line.strip() for line in result.stdout.splitlines()
