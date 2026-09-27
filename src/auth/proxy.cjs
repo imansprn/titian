@@ -174,6 +174,63 @@ function log(req, status, auth) {
   const safeUrl = req.url.replace(/([?&]token=)[^&]*/gi, '$1REDACTED');
   console.error(`[${new Date().toISOString()}] ${req.socket.remoteAddress} ${req.method} ${safeUrl} -> ${status} auth=${auth}`);
 }
+function oauthChallenge(error = 'invalid_token', description = 'Authentication required') {
+  return `Bearer resource_metadata="${RESOURCE_METADATA}", error="${error}", error_description="${description}"`;
+}
+function decorateToolListPayload(payload) {
+  if (!payload?.result || !Array.isArray(payload.result.tools)) return payload;
+  payload.result.tools = payload.result.tools.map((tool) => ({
+    ...tool,
+    securitySchemes: [{ type: 'oauth2', scopes: ['mcp'] }],
+  }));
+  return payload;
+}
+function decorateToolListBody(body, contentType) {
+  const decorate = (raw) => {
+    try { return JSON.stringify(decorateToolListPayload(JSON.parse(raw))); }
+    catch (_) { return raw; }
+  };
+  if (String(contentType || '').includes('text/event-stream')) {
+    return body.split('\n').map((line) => line.startsWith('data:') ? 'data:' + decorate(line.slice(5).trimStart()) : line).join('\n');
+  }
+  return decorate(body);
+}
+function sendToolAuthRequired(res, id) {
+  const challenge = oauthChallenge();
+  sendJSON(res, 200, {
+    jsonrpc: '2.0',
+    id: id ?? null,
+    result: {
+      content: [{ type: 'text', text: 'Authentication required. Connect this MCP server to continue.' }],
+      _meta: { 'mcp/www_authenticate': [challenge] },
+      isError: true,
+    },
+  }, { 'WWW-Authenticate': challenge });
+}
+function proxyBuffered(req, res, body, decorateTools = false) {
+  const headers = { ...req.headers, host: `${UPSTREAM_HOST}:${UPSTREAM_PORT}`, 'content-length': Buffer.byteLength(body) };
+  const proxyReq = http.request({ agent: false, host: UPSTREAM_HOST, port: UPSTREAM_PORT, path: req.url, method: req.method, headers }, (proxyRes) => {
+    if (!decorateTools) {
+      res.writeHead(proxyRes.statusCode, { ...proxyRes.headers, ...CORS });
+      proxyRes.pipe(res);
+      return;
+    }
+    let responseBody = '';
+    proxyRes.on('data', (chunk) => { responseBody += chunk; });
+    proxyRes.on('end', () => {
+      const decorated = decorateToolListBody(responseBody, proxyRes.headers['content-type']);
+      const responseHeaders = { ...proxyRes.headers, ...CORS, 'content-length': Buffer.byteLength(decorated) };
+      delete responseHeaders['transfer-encoding'];
+      res.writeHead(proxyRes.statusCode, responseHeaders);
+      res.end(decorated);
+    });
+  });
+  proxyReq.on('error', (err) => {
+    if (res.headersSent) return res.destroy();
+    sendJSON(res, 502, { jsonrpc: '2.0', error: { code: -32000, message: 'Bad gateway: ' + err.message }, id: null });
+  });
+  proxyReq.end(body);
+}
 
 const server = http.createServer((req, res) => {
   let url;
@@ -183,7 +240,7 @@ const server = http.createServer((req, res) => {
 
   // ---- Protected Resource Metadata (RFC 9728) ----
   if (pathname === '/.well-known/oauth-protected-resource') {
-    sendJSON(res, 200, { resource: MCP_ENDPOINT, authorization_servers: [PUBLIC_BASE], scopes_supported: [], bearer_methods_supported: ['header'] });
+    sendJSON(res, 200, { resource: MCP_ENDPOINT, authorization_servers: [PUBLIC_BASE], scopes_supported: ['mcp'], bearer_methods_supported: ['header'] });
     return;
   }
 
@@ -198,7 +255,7 @@ const server = http.createServer((req, res) => {
       grant_types_supported: ['authorization_code', 'refresh_token'],
       token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
       code_challenge_methods_supported: ['S256'],
-      scopes_supported: [],
+      scopes_supported: ['mcp'],
     });
     return;
   }
@@ -335,7 +392,7 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
         refresh[refresh_token] = { client_id: code.client_id, exp: now + REFRESH_TTL };
         saveState();
         log(req, 200, 'code');
-        sendJSON(res, 200, { access_token, token_type: 'Bearer', expires_in: ACCESS_TTL, refresh_token, scope: '' }, { 'Cache-Control': 'no-store' });
+        sendJSON(res, 200, { access_token, token_type: 'Bearer', expires_in: ACCESS_TTL, refresh_token, scope: 'mcp' }, { 'Cache-Control': 'no-store' });
         return;
       }
 
@@ -350,7 +407,7 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
         refresh[new_rt] = { client_id: rec.client_id, exp: now + REFRESH_TTL };
         saveState();
         log(req, 200, 'refresh');
-        sendJSON(res, 200, { access_token, token_type: 'Bearer', expires_in: ACCESS_TTL, refresh_token: new_rt, scope: '' }, { 'Cache-Control': 'no-store' });
+        sendJSON(res, 200, { access_token, token_type: 'Bearer', expires_in: ACCESS_TTL, refresh_token: new_rt, scope: 'mcp' }, { 'Cache-Control': 'no-store' });
         return;
       }
 
@@ -375,10 +432,30 @@ input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius
 
   // ---- auth gate (MCP) ----
   if (!isAuthorized(req)) {
-    res.writeHead(401, {
-      'Content-Type': 'application/json', ...CORS,
-      'WWW-Authenticate': `Bearer resource_metadata="${RESOURCE_METADATA}"`,
-    });
+    const presentedCredential = Boolean(req.headers.authorization || url.searchParams.has('token'));
+    if (!presentedCredential && pathname === '/mcp' && req.method === 'POST') {
+      readBody(req, (body) => {
+        let rpc = null;
+        try { rpc = JSON.parse(body); } catch (_) {}
+        const method = rpc && rpc.method;
+        if (method === 'tools/call') {
+          sendToolAuthRequired(res, rpc.id);
+          log(req, 200, 'oauth-required');
+          return;
+        }
+        if (['initialize', 'notifications/initialized', 'tools/list', 'ping'].includes(method)) {
+          proxyBuffered(req, res, body, method === 'tools/list');
+          return;
+        }
+        const challenge = oauthChallenge();
+        res.writeHead(401, { 'Content-Type': 'application/json', ...CORS, 'WWW-Authenticate': challenge });
+        res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'Unauthorized' }, id: rpc && rpc.id || null }));
+        log(req, 401, false);
+      });
+      return;
+    }
+    const challenge = oauthChallenge();
+    res.writeHead(401, { 'Content-Type': 'application/json', ...CORS, 'WWW-Authenticate': challenge });
     res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'Unauthorized' }, id: null }));
     log(req, 401, false);
     return;

@@ -19,7 +19,13 @@ const upstream = http.createServer((req, res) => {
   req.on('end', () => {
     lastUpstream = { method: req.method, url: req.url, headers: req.headers, body };
     res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'sess-1' });
-    res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { ok: true } }));
+    let rpc = null;
+    try { rpc = JSON.parse(body); } catch (_) {}
+    if (rpc?.method === 'tools/list') {
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'read_file', description: 'Read a file', inputSchema: { type: 'object' } }] } }));
+      return;
+    }
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc?.id ?? 1, result: { ok: true } }));
   });
 });
 
@@ -45,6 +51,7 @@ describe('discovery metadata', () => {
     const body = await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json();
     assert.equal(body.resource, 'https://titian.test/mcp');
     assert.deepEqual(body.authorization_servers, ['https://titian.test']);
+    assert.deepEqual(body.scopes_supported, ['mcp']);
   });
 
   for (const p of ['/.well-known/oauth-authorization-server', '/.well-known/openid-configuration']) {
@@ -160,6 +167,7 @@ describe('token endpoint', () => {
     assert.equal(body.token_type, 'Bearer');
     assert.equal(body.expires_in, 86400);
     assert.ok(body.refresh_token);
+    assert.equal(body.scope, 'mcp');
     const claims = proxy.verifyJWT(body.access_token);
     assert.equal(claims.sub, client.client_id);
     assert.equal(claims.aud, 'https://titian.test/mcp');
@@ -242,17 +250,33 @@ describe('token endpoint', () => {
 
 describe('/mcp gate and proxying', () => {
   const init = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} };
-  const post = (url, headers = {}) => fetch(url, {
-    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(init),
+  const postRpc = (url, rpc = init, headers = {}) => fetch(url, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(rpc),
   });
+  const post = (url, headers = {}) => postRpc(url, init, headers);
 
-  it('returns 401 with a resource_metadata challenge when unauthenticated', async () => {
+  it('allows unauthenticated initialization for OAuth-aware tool discovery', async () => {
     lastUpstream = null;
     const res = await post(`${base}/mcp`);
-    assert.equal(res.status, 401);
-    assert.equal(res.headers.get('www-authenticate'),
-      'Bearer resource_metadata="https://titian.test/.well-known/oauth-protected-resource"');
-    assert.equal((await res.json()).error.code, -32001);
+    assert.equal(res.status, 200);
+    assert.equal(lastUpstream && JSON.parse(lastUpstream.body).method, 'initialize');
+  });
+
+  it('adds OAuth securitySchemes to tools/list without exposing tool execution', async () => {
+    const res = await postRpc(`${base}/mcp`, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.result.tools[0].securitySchemes, [{ type: 'oauth2', scopes: ['mcp'] }]);
+  });
+
+  it('returns a tool-level OAuth challenge for unauthenticated tools/call', async () => {
+    lastUpstream = null;
+    const res = await postRpc(`${base}/mcp`, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'read_file', arguments: {} } });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.result.isError, true);
+    assert.match(body.result._meta['mcp/www_authenticate'][0], /resource_metadata=/);
+    assert.match(body.result._meta['mcp/www_authenticate'][0], /error_description=/);
     assert.equal(lastUpstream, null);
   });
 
