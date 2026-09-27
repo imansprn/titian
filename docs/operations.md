@@ -72,3 +72,17 @@ Verification creates test OAuth clients but does not edit project source files. 
 A migrated root `/mcp` connection is represented by a project with `rootRoute: true` in the registry. Its issuer, ports and credentials are preserved. If its previous filesystem access was unrestricted, migration keeps that access; it does not claim to add isolation. New projects use `/projects/<slug>/mcp`.
 
 The old `mcp-project` command may remain as a symlink to `titian` for compatibility. It is not a separate application. See [migration.md](migration.md) before moving a running checkout.
+
+## Project metadata
+
+Every authenticated MCP connection exposes a read-only `titian_project_info` tool and a `titian://project/metadata` resource. They return the same JSON object: `project` is the configured slug, `roots` is the configured folder list, and `capabilities` is a list of descriptive labels. Initialization instructions also include this metadata.
+
+```sh
+titian add "Example" /path/to/project --slug example --capabilities backend git test build
+titian update example --capabilities backend git test build
+titian update example --capabilities
+```
+
+The last command clears labels. Labels use lowercase letters, digits and hyphens. They are not OS permissions or MCP protocol capability declarations; no framework or command availability is inferred from a label. Changing metadata restarts the affected project's services while preserving its URL and credentials. Existing projects default to an empty capability list.
+
+Metadata contains local paths, so it is served through the authenticated MCP channel. Do not publish it in OAuth discovery documents.

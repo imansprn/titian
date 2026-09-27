@@ -25,7 +25,7 @@ let bridge, base;
 before(async () => {
   const port = await freePort();
   bridge = spawn(process.execPath, [BRIDGE], {
-    env: { ...process.env, MCP_BRIDGE_PORT: String(port), MCP_STDIO_COMMAND: process.execPath, MCP_STDIO_WRAPPER: FAKE_SERVER },
+    env: { ...process.env, MCP_BRIDGE_PORT: String(port), MCP_STDIO_COMMAND: process.execPath, MCP_STDIO_WRAPPER: FAKE_SERVER, MCP_PROJECT_SLUG: 'test-project', MCP_PROJECT_ROOTS: JSON.stringify(['/tmp/project-root']), MCP_PROJECT_CAPABILITIES: JSON.stringify(['mobile', 'test']) },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let stderr = '';
@@ -99,7 +99,7 @@ describe('MCP proxying through the SDK client', () => {
 
   it('lists tools with their raw input schemas', async () => {
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name), ['echo', 'fail']);
+    assert.deepEqual(tools.map((t) => t.name), ['echo', 'fail', 'titian_project_info']);
     const echo = tools.find((t) => t.name === 'echo');
     assert.deepEqual(echo.inputSchema, ECHO_SCHEMA);
   });
@@ -120,6 +120,17 @@ describe('MCP proxying through the SDK client', () => {
     assert.equal(resources[0].uri, 'mem://hello');
     const { contents } = await client.readResource({ uri: 'mem://hello' });
     assert.equal(contents[0].text, 'hello world');
+  });
+
+  it('exposes consistent project metadata through a tool and resource', async () => {
+    const result = await client.callTool({ name: 'titian_project_info', arguments: {} });
+    const expected = { project: 'test-project', roots: ['/tmp/project-root'], capabilities: ['mobile', 'test'] };
+    assert.deepEqual(result.structuredContent, expected);
+    assert.deepEqual(JSON.parse(result.content[0].text), expected);
+    const { resources } = await client.listResources();
+    assert.ok(resources.some(resource => resource.uri === 'titian://project/metadata'));
+    const { contents } = await client.readResource({ uri: 'titian://project/metadata' });
+    assert.deepEqual(JSON.parse(contents[0].text), expected);
   });
 
   it('forwards prompts', async () => {
@@ -168,7 +179,7 @@ describe('session handling', () => {
     const res = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' },
       { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2099-01-01' });
     assert.equal(res.status, 200);
-    assert.equal((await readRpc(res)).result.tools.length, 2);
+    assert.equal((await readRpc(res)).result.tools.length, 3);
   });
 
   it('closes a session on DELETE', async () => {

@@ -148,6 +148,7 @@ def plist_for(project, part):
                'DESKTOP_COMMANDER_BIN': str(ROOT / 'runtime/dc/dist/index.js'),
                'MCP_DC_CONFIG_DIR': str(inst), 'MCP_PROJECT_ROOT': cwd,
                'MCP_PROJECT_ROOTS': json.dumps(project['roots']),
+               'MCP_PROJECT_CAPABILITIES': json.dumps(project.get('capabilities', [])),
                'MCP_PROJECT_SLUG': slug, 'MCP_SERVER_LABEL': project['name']}
     else:
         script = ROOT / 'runtime/auth/proxy.cjs'
@@ -184,6 +185,12 @@ def free_ports(projects):
     raise ValueError('Tidak ada port lokal tersedia dalam rentang 8101–8999.')
 
 
+def capability_labels(values):
+    if any(not isinstance(value, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', value) for value in values):
+        raise ValueError('Capability labels must be lowercase letters, digits or hyphens (1–64 characters).')
+    return list(dict.fromkeys(values))
+
+
 def make_project(name, paths, slug, projects):
     slug = slug or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
     if not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', slug) or slug in ['all', 'gateway']:
@@ -215,6 +222,7 @@ def wait_health(port):
 
 def add(args, projects):
     project = make_project(args.name, args.paths, args.slug, projects)
+    project['capabilities'] = capability_labels(getattr(args, 'capabilities', None) or [])
     slug = project['slug']
     inst = ROOT / 'instances' / slug
     if inst.exists():
@@ -328,6 +336,8 @@ def change(args, projects):
     project = find_project(projects, args.project)
     updated = dict(project)
     if args.action == 'update':
+        if getattr(args, 'capabilities', None) is not None:
+            updated['capabilities'] = capability_labels(args.capabilities)
         if args.name: updated['name'] = args.name.strip()
         if not updated['name']: raise ValueError('Nama tidak boleh kosong.')
         if args.paths:
@@ -475,12 +485,14 @@ def main():
     sub.add_parser('list', help='Daftar nama, folder, dan URL project')
     add_parser = sub.add_parser('add', help='Tambah project; boleh lebih dari satu folder')
     add_parser.add_argument('name'); add_parser.add_argument('paths', nargs='+')
+    add_parser.add_argument('--capabilities', nargs='*', help='Descriptive labels, e.g. mobile backend git test build')
     add_parser.add_argument('--slug'); add_parser.add_argument('--dry-run', action='store_true')
     for action in ['remove', 'disable', 'enable', 'update']:
         p = sub.add_parser(action)
         p.add_argument('project'); p.add_argument('--dry-run', action='store_true')
         if action == 'update':
             p.add_argument('paths', nargs='*'); p.add_argument('--name')
+            p.add_argument('--capabilities', nargs='*', help='Replace descriptive labels; omit values to clear')
     sub.add_parser('recover', help='Pulihkan operasi yang terputus')
     p = sub.add_parser('doctor'); p.add_argument('project', nargs='?', default='all'); p.add_argument('--public', action='store_true')
     p = sub.add_parser('rotate-logs'); p.add_argument('--max-mb', type=float, default=10); p.add_argument('--keep', type=int, default=5)

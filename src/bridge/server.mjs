@@ -63,6 +63,36 @@ catch (e) { log('listResources failed:', e.message); }
 try { promptCatalog = (await stdioClient.listPrompts()).prompts || []; log(`loaded ${promptCatalog.length} prompts`); }
 catch (e) { log('listPrompts failed:', e.message); }
 
+const projectMetadata = {
+  project: process.env.MCP_PROJECT_SLUG || 'titian',
+  roots: JSON.parse(process.env.MCP_PROJECT_ROOTS || '[]'),
+  capabilities: JSON.parse(process.env.MCP_PROJECT_CAPABILITIES || '[]'),
+};
+for (const key of ['roots', 'capabilities']) {
+  if (!Array.isArray(projectMetadata[key]) || projectMetadata[key].some(value => typeof value !== 'string')) {
+    throw new Error(`Invalid project metadata: ${key} must be an array of strings`);
+  }
+}
+const metadataUri = 'titian://project/metadata';
+const metadataTool = {
+  name: 'titian_project_info',
+  description: 'Read this server’s configured project, filesystem roots, and descriptive capability labels. Labels are not permissions or executable commands.',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  outputSchema: {
+    type: 'object', properties: {
+      project: { type: 'string' },
+      roots: { type: 'array', items: { type: 'string' } },
+      capabilities: { type: 'array', items: { type: 'string' } },
+    }, required: ['project', 'roots', 'capabilities'], additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+};
+toolCatalog = [...toolCatalog.filter(tool => tool.name !== metadataTool.name), metadataTool];
+resourceCatalog = [...resourceCatalog.filter(resource => resource.uri !== metadataUri), {
+  uri: metadataUri, name: 'Titian project metadata', mimeType: 'application/json',
+  description: 'Project identity, configured roots, and descriptive capability labels.',
+}];
+
 // ---------------------------------------------------------------------------
 // 3. Build a fresh low-level Server per HTTP session, proxying every request
 //    verbatim to the stdio client.
@@ -70,13 +100,14 @@ catch (e) { log('listPrompts failed:', e.message); }
 function makeSessionServer() {
   const server = new Server(
     { name: process.env.MCP_PROJECT_SLUG || 'titian', version: '1.0.0' },
-    { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: `This server handles ${process.env.MCP_SERVER_LABEL}. Project roots: ${process.env.MCP_PROJECT_ROOTS}. Use absolute file paths. Run commands in the appropriate project root. Terminal access runs as the macOS user and is not sandboxed.` },
+    { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: `This server handles ${process.env.MCP_SERVER_LABEL}. Project roots: ${process.env.MCP_PROJECT_ROOTS}. Use absolute file paths. Run commands in the appropriate project root. Terminal access runs as the macOS user and is not sandboxed. Project metadata: ${JSON.stringify(projectMetadata)}` },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolCatalog }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    if (name === metadataTool.name) return { content: [{ type: 'text', text: JSON.stringify(projectMetadata) }], structuredContent: projectMetadata, isError: false };
     if (!toolCatalog.some(t => t.name === name)) throw new Error('Tool unavailable for project server');
     const result = await stdioClient.callTool({ name, arguments: args });
     return { ...result, isError: result.isError ?? false };
@@ -85,6 +116,7 @@ function makeSessionServer() {
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: resourceCatalog }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+    if (req.params.uri === metadataUri) return { contents: [{ uri: metadataUri, mimeType: 'application/json', text: JSON.stringify(projectMetadata) }] };
     const result = await stdioClient.readResource({ uri: req.params.uri });
     return { contents: result.contents };
   });

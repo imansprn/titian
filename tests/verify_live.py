@@ -76,6 +76,11 @@ for project in projects:
  assert init['serverInfo']['name']==slug
  rpc('notifications/initialized',notify=True)
  catalog=rpc('tools/list');assert all(t['name']!='set_config_value' for t in catalog['tools'])
+ metadata=rpc('tools/call',{'name':'titian_project_info','arguments':{}})
+ expected={'project':slug,'roots':project['roots'],'capabilities':project.get('capabilities',[])}
+ assert metadata['structuredContent']==expected
+ resource=rpc('resources/read',{'uri':'titian://project/metadata'})
+ assert json.loads(resource['contents'][0]['text'])==expected
  config=rpc('tools/call',{'name':'get_config','arguments':{}})
  configtext='\n'.join(c.get('text','') for c in config['content'])
  for directory in project['roots']:assert directory in configtext

@@ -2,6 +2,7 @@
 import argparse
 import importlib.util
 import json
+import plistlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -41,6 +42,13 @@ class Bootstrap(unittest.TestCase):
         self.args.origin = 'https://different.test'
         with self.assertRaises(ValueError): manage.initialize(self.args)
         self.assertEqual(manage.public_origin(), 'https://example.test')
+
+    def test_metadata_labels_reach_the_bridge_environment(self):
+        project = {'slug': 'sample', 'name': 'Sample', 'roots': ['/tmp'], 'bridgePort': 8101, 'authPort': 8201, 'capabilities': ['mobile', 'build']}
+        plist = plistlib.loads(manage.plist_for(project, 'bridge'))
+        self.assertEqual(json.loads(plist['EnvironmentVariables']['MCP_PROJECT_CAPABILITIES']), ['mobile', 'build'])
+        self.assertEqual(manage.capability_labels(['mobile', 'mobile', 'test']), ['mobile', 'test'])
+        with self.assertRaises(ValueError): manage.capability_labels(['invalid label'])
 
     def test_missing_registry_has_actionable_error(self):
         with self.assertRaisesRegex(ValueError, 'init --origin'): manage.load()
