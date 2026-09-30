@@ -1,4 +1,4 @@
-"""Exercise project OAuth PKCE, MCP routing, filesystem roots and terminal cwd.
+"""Exercise project OAuth PKCE, MCP routing, filesystem roots and effective permission policy.
 No project files are modified; credentials are kept in memory.
 """
 from pathlib import Path
@@ -81,17 +81,22 @@ for project in projects:
  assert metadata['structuredContent']==expected
  resource=rpc('resources/read',{'uri':'titian://project/metadata'})
  assert json.loads(resource['contents'][0]['text'])==expected
- config=rpc('tools/call',{'name':'get_config','arguments':{}})
- configtext='\n'.join(c.get('text','') for c in config['content'])
- for directory in project['roots']:assert directory in configtext
- for directory in project['roots']:
-  result=rpc('tools/call',{'name':'list_directory','arguments':{'path':directory,'depth':1}})
-  assert not result.get('isError'),(slug,result)
+ effective=rpc('tools/call',{'name':'titian_permissions','arguments':{}})['structuredContent']
+ assert effective['version']==2,(slug,effective)
+ assert effective['policy']==project['permissions'],(slug,effective)
+ assert effective['roots']==project['roots'],(slug,effective)
+ if effective['rules']['files.read']=='allow':
+  for directory in project['roots']:
+   # Broad reads containing Titian state are intentionally blocked.
+   if Path(directory) in root.parents or Path(directory)==root:continue
+   result=rpc('tools/call',{'name':'list_directory','arguments':{'path':directory,'depth':1}})
+   assert not result.get('isError'),(slug,result)
  if '/' not in project['roots']:
-  denied=rpc('tools/call',{'name':'list_directory','arguments':{'path':str(root.parent),'depth':1}})
-  assert denied.get('isError') or 'denied' in str(denied).lower() or 'not allowed' in str(denied).lower(),(slug,denied)
- cwd=rpc('tools/call',{'name':'start_process','arguments':{'command':'pwd','timeout_ms':1000}})
- assert project['roots'][0] in str(cwd),(slug,cwd)
+  denied=rpc('tools/call',{'name':'list_directory','arguments':{'path':str(root),'depth':1}})
+  assert denied.get('isError'),(slug,denied)
+ if effective['rules']['process.start']=='deny':
+  denied=rpc('tools/call',{'name':'start_process','arguments':{'command':'pwd','timeout_ms':1000}})
+  assert denied.get('isError') and denied['structuredContent']['status']=='denied',(slug,denied)
  request(endpoint,headers=headers,method='DELETE')
- isolation = 'unrestricted migrated root' if '/' in project['roots'] else 'outside-root rejection'
- print(slug+': PASS OAuth PKCE/refresh, metadata, project token, tools, roots, '+isolation+', cwd',flush=True)
+ isolation = 'host execution is not sandboxed'
+ print(slug+': PASS OAuth PKCE/refresh, metadata, project token, tools, roots, '+isolation+', effective permissions',flush=True)

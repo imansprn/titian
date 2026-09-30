@@ -14,6 +14,7 @@ import sys
 import time
 import urllib.request
 import urllib.parse
+import permissions
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 ROOT = Path(os.environ.get('TITIAN_DATA_DIR', APP_ROOT / '.titian')).expanduser().resolve()
@@ -149,6 +150,9 @@ def plist_for(project, part):
                'MCP_DC_CONFIG_DIR': str(inst), 'MCP_PROJECT_ROOT': cwd,
                'MCP_PROJECT_ROOTS': json.dumps(project['roots']),
                'MCP_PROJECT_CAPABILITIES': json.dumps(project.get('capabilities', [])),
+               'MCP_PERMISSION_POLICY': json.dumps(permissions.validate(project.get('permissions', {'version': 2, 'preset': 'readonly', 'rules': {}}))),
+               'MCP_PROTECTED_PATHS': json.dumps([str(ROOT), str(AGENTS)]),
+               'MCP_PUBLIC_BASE': project.get('url', '').removesuffix('/mcp'),
                'MCP_PROJECT_SLUG': slug, 'MCP_SERVER_LABEL': project['name']}
     else:
         script = ROOT / 'runtime/auth/proxy.cjs'
@@ -223,6 +227,7 @@ def wait_health(port):
 def add(args, projects):
     project = make_project(args.name, args.paths, args.slug, projects)
     project['capabilities'] = capability_labels(getattr(args, 'capabilities', None) or [])
+    project['permissions'] = permissions.configure(args)
     slug = project['slug']
     inst = ROOT / 'instances' / slug
     if inst.exists():
@@ -233,6 +238,7 @@ def add(args, projects):
             raise ValueError(f'Layanan {name} sudah ada; tidak ditimpa.')
     if args.dry_run:
         print(json.dumps(project, indent=2)); return
+    permissions.require_runtime(ROOT)
     for path in ['runtime/bridge/server.mjs', 'runtime/auth/proxy.cjs', 'runtime/dc/dist/index.js']:
         if not (ROOT / path).is_file():
             raise ValueError('Runtime belum tersedia. Jalankan titian runtime install terlebih dahulu.')
@@ -252,6 +258,7 @@ def add(args, projects):
                 atomic(file, plist_for(project, part), 0o644)
             launch('bootstrap', DOMAIN, str(AGENTS / f'{name}.plist'))
         wait_health(project['bridgePort']); wait_health(project['authPort'])
+        permissions.verify_effective(ROOT, project)
         # Publish the route only after both processes are healthy.
         save(projects + [project])
         atomic(tx / 'committed', b'yes')
@@ -338,6 +345,9 @@ def change(args, projects):
     if args.action == 'update':
         if getattr(args, 'capabilities', None) is not None:
             updated['capabilities'] = capability_labels(args.capabilities)
+        updated['permissions'] = permissions.configure(args, project.get('permissions'))
+        updated.pop('commandMode', None)
+        updated.pop('allowedCommands', None)
         if args.name: updated['name'] = args.name.strip()
         if not updated['name']: raise ValueError('Nama tidak boleh kosong.')
         if args.paths:
@@ -347,6 +357,10 @@ def change(args, projects):
         updated['enabled'] = args.action == 'enable'
     if args.dry_run:
         print(json.dumps({'action': args.action, 'project': updated}, indent=2)); return
+    if args.action in ['update', 'enable']:
+        permissions.require_runtime(ROOT)
+        if 'permissions' not in updated:
+            raise ValueError('Choose permissions explicitly with titian update before enabling a legacy workspace.')
     tx = snapshot(projects, project)
     try:
         # Hide the route while its services/configuration are being changed.
@@ -374,6 +388,7 @@ def change(args, projects):
                 else: installed.unlink(missing_ok=True)
             if updated.get('enabled', True):
                 wait_health(updated['bridgePort']); wait_health(updated['authPort'])
+                permissions.verify_effective(ROOT, updated)
             final = [updated if p['slug'] == args.project else p for p in projects]
         save(final)
         atomic(tx / 'committed', b'yes')
@@ -486,6 +501,7 @@ def main():
     add_parser = sub.add_parser('add', help='Tambah project; boleh lebih dari satu folder')
     add_parser.add_argument('name'); add_parser.add_argument('paths', nargs='+')
     add_parser.add_argument('--capabilities', nargs='*', help='Descriptive labels, e.g. mobile backend git test build')
+    permissions.flags(add_parser)
     add_parser.add_argument('--slug'); add_parser.add_argument('--dry-run', action='store_true')
     for action in ['remove', 'disable', 'enable', 'update']:
         p = sub.add_parser(action)
@@ -493,6 +509,11 @@ def main():
         if action == 'update':
             p.add_argument('paths', nargs='*'); p.add_argument('--name')
             p.add_argument('--capabilities', nargs='*', help='Replace descriptive labels; omit values to clear')
+            permissions.flags(p)
+    p = sub.add_parser('permissions', help='Show configured and verified effective permissions'); p.add_argument('project')
+    p = sub.add_parser('approvals', help='Local owner review of expiring, one-time requests')
+    p.add_argument('project'); p.add_argument('approval_action', choices=['list', 'show', 'approve', 'reject'], nargs='?', default='list')
+    p.add_argument('request_id', nargs='?')
     sub.add_parser('recover', help='Pulihkan operasi yang terputus')
     p = sub.add_parser('doctor'); p.add_argument('project', nargs='?', default='all'); p.add_argument('--public', action='store_true')
     p = sub.add_parser('rotate-logs'); p.add_argument('--max-mb', type=float, default=10); p.add_argument('--keep', type=int, default=5)
@@ -513,6 +534,10 @@ def main():
         elif args.action == 'list':
             for p in projects:
                 print(f"{p['slug']} — {p['name']} ({'active' if p.get('enabled', True) else 'disabled'})\n  {p['url']}\n  " + '\n  '.join(p['roots']))
+        elif args.action == 'permissions':
+            permissions.show(ROOT, find_project(projects, args.project))
+        elif args.action == 'approvals':
+            permissions.approvals(ROOT, find_project(projects, args.project), args)
         else: status_or_restart(args, projects)
 
 

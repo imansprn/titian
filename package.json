@@ -10,8 +10,9 @@
   "scripts": {
     "setup": "npm ci",
     "test": "node --test tests/*.test.js tests/bridge/*.test.mjs",
-    "test:manager": "python3 tests/test_bootstrap.py && python3 tests/test_failures.py",
-    "test:dependencies": "node tests/dependencies.cjs"
+    "test:manager": "python3 tests/test_bootstrap.py && python3 tests/test_failures.py && python3 tests/test_permissions.py",
+    "test:dependencies": "node tests/dependencies.cjs",
+    "test:permissions-runtime": "node --test tests/runtime-permissions.smoke.mjs"
   },
   "bin": {
     "titian": "bin/titian"

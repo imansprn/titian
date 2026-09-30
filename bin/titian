@@ -5,10 +5,10 @@ import sys
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / 'src/manager'))
 if len(sys.argv) > 1 and sys.argv[1] == 'runtime':
-    if len(sys.argv) != 3 or sys.argv[2] not in ['install', 'check', 'update']:
+    if len(sys.argv) < 3 or sys.argv[2] not in ['install', 'check', 'update']:
         raise SystemExit('Usage: titian runtime install|check|update')
     mode = {'install': ['--install'], 'check': [], 'update': ['--activate']}[sys.argv[2]]
-    sys.argv = ['titian runtime', *mode]
+    sys.argv = ['titian runtime', *mode, *sys.argv[3:]]
     runpy.run_path(str(root / 'src/manager/runtime.py'), run_name='__main__')
 else:
     runpy.run_path(str(root / 'src/manager/manage.py'), run_name='__main__')

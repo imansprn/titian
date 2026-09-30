@@ -15,7 +15,8 @@ const FAKE_SOURCE = `#!${process.execPath}
 const fs = require('fs');
 const { spawn } = require('child_process');
 if (process.env.FAKE_EXIT) process.exit(Number(process.env.FAKE_EXIT));
-const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+const program = process.env.FAKE_STUBBORN ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)" : 'setInterval(() => {}, 1000)';
+const grandchild = spawn(process.execPath, ['-e', program], { stdio: 'ignore' });
 fs.writeFileSync(process.env.FAKE_INFO, JSON.stringify({ args: process.argv.slice(2), pid: process.pid, grandchild: grandchild.pid }));
 process.stdin.pipe(process.stdout);
 `;
@@ -86,6 +87,15 @@ describe('dc-wrapper', () => {
     child.kill('SIGTERM');
     await exited;
     assert.ok(await waitFor(() => !isAlive(pid) && !isAlive(grandchild)), 'desktop-commander tree leaked');
+  });
+
+  it('kills a stubborn grandchild after the direct child has exited', async () => {
+    const { child, exited, readInfo } = startWrapper({ FAKE_STUBBORN: '1' });
+    const { pid, grandchild } = await readInfo();
+    await new Promise(resolve => setTimeout(resolve, 150));
+    child.kill('SIGTERM');
+    await exited;
+    assert.ok(await waitFor(() => !isAlive(pid) && !isAlive(grandchild)), 'stubborn grandchild leaked after parent exit');
   });
 
   it('propagates the child exit code', async () => {

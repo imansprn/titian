@@ -3,13 +3,23 @@
 [![CI](https://github.com/imansprn/titian/actions/workflows/ci.yml/badge.svg)](https://github.com/imansprn/titian/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/imansprn/titian)](LICENSE)
 
-**Connect your local development projects to remote MCP clients through one authenticated gateway.** Titian runs Desktop Commander on your Mac and gives each project its own URL, OAuth credentials and folder configuration.
+**Connect your local workspaces to remote MCP clients through one authenticated gateway.** Titian runs Desktop Commander on your Mac and gives each project its own URL, OAuth credentials and folder configuration.
 
 For example, connect a mobile app and a backend as two separate MCP connections, or give one connection access to both folders. Clients can read project metadata to identify the configured project and roots. One project uses the same installation as many.
 
 Titian means a narrow footbridge in Indonesian.
 
 > Desktop Commander can read files and run commands with your account's permissions. Project folders are not an OS sandbox. Read [SECURITY.md](SECURITY.md) before exposing the gateway.
+
+## Documentation
+
+| Guide | What it covers |
+|---|---|
+| [Permissions and approvals](docs/permissions.md) | Presets, task templates, custom rules, owner approval and migration. |
+| [Operations](docs/operations.md) | Installation, service lifecycle, runtime updates and validation. |
+| [Troubleshooting](docs/troubleshooting.md) | Connection failures, blocked operations and approval errors. |
+| [Architecture](docs/architecture.md) | Gateway, authentication, policy enforcement and execution. |
+| [Security](SECURITY.md) | Host-execution risks and the limits of permission controls. |
 
 ## Before you start
 
@@ -65,7 +75,7 @@ Replace `/absolute/path/to/project` with an existing directory:
 ./bin/titian add "My app" /absolute/path/to/project --slug my-app
 ```
 
-This starts the project's local bridge and OAuth proxy. The command prints its connection URL and PIN file path. The URL will have this shape:
+This starts the project's local bridge and OAuth proxy with read-only permissions by default. The command prints its connection URL and PIN file path. The URL will have this shape:
 
 ```text
 https://my-mac.my-tailnet.ts.net/projects/my-app/mcp
@@ -152,6 +162,51 @@ After authentication, clients can read the MCP resource `titian://project/metada
 ```
 
 Capabilities are labels you configure, not permissions, detected frameworks, or guarantees that a build command exists. They default to `[]`. Local paths are returned through the authenticated MCP connection, not public OAuth discovery metadata.
+
+## Permissions and owner approvals
+
+New workspaces default to `readonly`. Presets control operations, not command-name prefixes:
+
+| Preset | Use it for | Key behavior |
+|---|---|---|
+| `readonly` | Browsing and searching selected files. | No file changes or shell execution, including `git status` or `pwd`. |
+| `editor` | Creating and editing selected files. | Moves/renames ask; shell execution, URL retrieval and rich rendering remain denied. |
+| `custom` | Explicit operation rules. | Each operation is `allow`, `ask` or `deny`; unspecified rules deny. |
+| `unrestricted` | Explicitly trusted host workflows. | Reviewed operations run without routine Titian approval; authentication, file scope and backend restrictions still apply. |
+
+**No preset is an OS sandbox.** `editor` allows overwriting existing files; it is not a create-only preset. DOCX/PDF generation additionally requires `document.render` and is not included in `editor`.
+
+Task templates are separate from permission levels. `documents` selects `editor`; `developer` and `data-analysis` select custom rules and **ask before starting a process or sending interactive input**. The developer template also asks before system inspection. Templates do not guess whether `npm test` or another command is harmless. See the [complete preset matrix](docs/permissions.md#preset-reference).
+
+```sh
+titian update example --permissions editor
+titian update example --template developer
+titian update example --permissions custom --allow files.read --ask process.start
+titian permissions example
+```
+
+`titian permissions` shows configured and verified effective policy separately. An offline or older runtime is reported as unverified, not protected. Changing source code alone does not activate a new runtime.
+
+When a tool returns `approval_required`, review it on the Mac in an interactive owner terminal:
+
+```sh
+titian approvals example list
+titian approvals example show REQUEST_ID
+titian approvals example approve REQUEST_ID
+# Or: titian approvals example reject REQUEST_ID
+```
+
+Titian executes an `allow` request, queues an `ask` request without executing it, and rejects a `deny` request without an approve-once shortcut. There is no MCP tool for approving requests or changing the policy; those decisions belong in the local owner interface.
+
+**Approving does not execute the operation.** After local approval, the same authenticated client explicitly calls the MCP tool `titian_resume` with these arguments (replace the placeholder with the returned request ID):
+
+```json
+{ "requestId": "REQUEST_ID" }
+```
+
+The request expires five minutes after it was created, even if approved later. Approval is single-use and bound to the stored request and client; it never enables that command globally. A backend `blockedCommands` rejection remains a rejection. This release uses a local CLI, not a browser approval dialog or MCP elicitation. See [blocked commands and approval errors](docs/permissions.md#blocked-commands-and-approval-errors).
+
+For an existing installation, [migrate explicitly](docs/permissions.md#migration-and-activation) before changing policy. Full operation definitions and limitations: [permissions](docs/permissions.md).
 
 ```sh
 titian update example --capabilities mobile backend git test build

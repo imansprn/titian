@@ -1,0 +1,79 @@
+{
+  "version": 2,
+  "operations": [
+    "files.read",
+    "files.write",
+    "files.move",
+    "search",
+    "process.start",
+    "process.input",
+    "process.read",
+    "process.stop",
+    "system.inspect",
+    "network.fetch",
+    "document.render"
+  ],
+  "presets": {
+    "readonly": {
+      "files.read": "allow",
+      "search": "allow",
+      "process.read": "allow"
+    },
+    "editor": {
+      "files.read": "allow",
+      "search": "allow",
+      "process.read": "allow",
+      "files.write": "allow",
+      "files.move": "ask"
+    },
+    "custom": {},
+    "unrestricted": {
+      "files.read": "allow",
+      "files.write": "allow",
+      "files.move": "allow",
+      "search": "allow",
+      "process.start": "allow",
+      "process.input": "allow",
+      "process.read": "allow",
+      "process.stop": "allow",
+      "system.inspect": "allow",
+      "network.fetch": "allow",
+      "document.render": "allow"
+    }
+  },
+  "templates": {
+    "developer": {
+      "preset": "custom",
+      "rules": {
+        "files.read": "allow",
+        "search": "allow",
+        "process.read": "allow",
+        "files.write": "allow",
+        "files.move": "ask",
+        "process.start": "ask",
+        "process.input": "ask",
+        "process.stop": "ask",
+        "system.inspect": "ask",
+        "document.render": "ask"
+      }
+    },
+    "documents": {
+      "preset": "editor",
+      "rules": {}
+    },
+    "data-analysis": {
+      "preset": "custom",
+      "rules": {
+        "files.read": "allow",
+        "search": "allow",
+        "process.read": "allow",
+        "files.write": "allow",
+        "files.move": "ask",
+        "process.start": "ask",
+        "process.input": "ask",
+        "process.stop": "ask",
+        "document.render": "ask"
+      }
+    }
+  }
+}

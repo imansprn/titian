@@ -20,6 +20,7 @@ const [cmd, args] = bin
 const child = spawn(cmd, args, { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
 
 // Bridge stdio between the parent and desktop-commander.
+// Authorization is enforced on parsed requests in server.mjs.
 process.stdin.pipe(child.stdin);
 child.stdout.pipe(process.stdout);
 child.stderr.pipe(process.stderr);
@@ -30,17 +31,19 @@ for (const s of [process.stdin, process.stdout, process.stderr]) {
 }
 
 let cleaned = false;
+let exitCode = 0;
 function killGroup(sig) {
   try { process.kill(-child.pid, sig); } catch (_) { /* already gone */ }
 }
-function shutdown() {
+function shutdown(code = 0) {
+  exitCode = Number.isInteger(code) ? code : 0;
   if (cleaned) return;
   cleaned = true;
   killGroup('SIGTERM');
   // Keep the timer REFERENCED (no .unref) so SIGKILL is guaranteed to fire even
   // if the wrapper is otherwise idle. Previously .unref() let the process exit
   // and cancel the SIGKILL, leaking desktop-commander processes on every session.
-  setTimeout(() => killGroup('SIGKILL'), 1500);
+  setTimeout(() => { killGroup('SIGKILL'); process.exit(exitCode); }, 1500);
 }
 
 ['SIGTERM', 'SIGINT', 'SIGHUP'].forEach((sig) => process.on(sig, shutdown));
@@ -48,5 +51,5 @@ process.stdin.on('end', shutdown);
 process.stdin.on('close', shutdown);
 
 child.on('exit', (code, signal) => {
-  process.exit(signal ? 0 : (code === null ? 0 : code));
+  if (!cleaned) shutdown(signal ? 0 : (code === null ? 0 : code));
 });

@@ -59,13 +59,38 @@ stream to resume and no session to terminate with DELETE. Compatible clients
 treat HTTP 405 on the optional GET stream as "stream not supported" and continue
 using POST requests.
 
+## Permission denied or approval required
+
+Check permissions separately from connection health:
+
+```sh
+titian status example
+titian doctor example
+titian permissions example
+titian approvals example list
+```
+
+`activation: active` means the running policy matches the configured policy. `unverified` means there is no verified response from a compatible runtime; `mismatch` means the reported policy does not match. A healthy listener or a policy saved in the registry is not proof of enforcement. See [migration and activation](permissions.md#migration-and-activation) for installing the permission runtime.
+
+For `approval_required`, review the returned request ID with `titian approvals example show REQUEST_ID`, then approve or reject it in an interactive local terminal. The same authenticated client must call `titian_resume` after approval; sending the original command again is not a resume. There is no browser approval dialog in this release.
+
+For `denied`, inspect the reason. A hard policy denial has no approve-once shortcut; only an owner policy change can authorize it. Path and process-ownership failures need a valid scoped request, not a broader command allowlist. `readonly` and `editor` deliberately reject all shell launches, even `pwd` and `git status`.
+
+Approvals expire five minutes after the original request and disappear when the bridge restarts. Requests can also be rejected after a target or execution context changes. Do not blindly resubmit an operation when a result is lost; it may already have executed. Inspect its effects first.
+
+If the CLI requires an interactive terminal, use the owner's local terminal rather than piping confirmation or asking the assistant to approve itself. If Desktop Commander returns `Command not allowed`, Titian approval does not change that backend restriction.
+
+See [blocked-command results](permissions.md#blocked-commands-and-approval-errors) for the complete status reference, including an unavailable owner endpoint and a full approval queue.
+
 ## Restarts
 
 A bridge restart no longer leaves a client holding a server-side session that
 does not exist. Requests sent after the process returns are independent.
 
-An in-flight request is still interrupted if its process is restarted. Retry
-that operation after the service is healthy again.
+An in-flight request is still interrupted if its process is restarted. Its
+side effects may already have occurred, so inspect the result before retrying a
+write or execution request. Restart clears pending approvals and process-session
+ownership; create and review a new request when another attempt is appropriate.
 
 After source changes:
 

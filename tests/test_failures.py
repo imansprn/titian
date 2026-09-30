@@ -19,12 +19,13 @@ class Transactions(unittest.TestCase):
         root = Path(self.temp.name)
         self.patches = [patch.object(manage, 'ROOT', root), patch.object(manage, 'AGENTS', root / 'agents'),
                         patch.object(manage, 'loaded', return_value=False), patch.object(manage, 'launch'),
-                        patch.object(manage, 'stop'), patch.object(manage, 'wait_health')]
+                        patch.object(manage, 'stop'), patch.object(manage, 'wait_health'), patch.object(manage.permissions, 'verify_effective')]
         for p in self.patches: p.start(); self.addCleanup(p.stop)
         for name in ['agents','launchagents','instances/demo','logs','code','runtime/bridge','runtime/auth','runtime/dc/dist']:
             (root / name).mkdir(parents=True, exist_ok=True)
         for name in ['runtime/auth/proxy.cjs','runtime/bridge/server.mjs','runtime/dc/dist/index.js']:
             (root / name).write_text('// fixture')
+        (root / 'runtime/build.json').write_text(json.dumps({'permissionVersion': 2}))
         self.root = root
         self.project = {'slug':'demo','name':'Demo','roots':[str(root / 'code')],'bridgePort':8107,'authPort':8108,'url':'https://example.test/projects/demo/mcp'}
         manage.save([self.project])
@@ -58,6 +59,12 @@ class Transactions(unittest.TestCase):
                 manage.change(argparse.Namespace(action='update',project='demo',dry_run=False,name='Changed',paths=[]),manage.load())
         self.assert_original()
         self.assertEqual((self.root / 'instances/demo/config.json').read_text(),old)
+
+    def test_effective_policy_mismatch_rolls_back_update(self):
+        with patch.object(manage.permissions, 'verify_effective', side_effect=RuntimeError('policy mismatch')):
+            with self.assertRaisesRegex(RuntimeError, 'policy mismatch'):
+                manage.change(argparse.Namespace(action='update', project='demo', dry_run=False, name='Changed', paths=[]), manage.load())
+        self.assert_original()
 
     def test_interrupted_remove_is_recoverable(self):
         tx=manage.snapshot(manage.load(), self.project)

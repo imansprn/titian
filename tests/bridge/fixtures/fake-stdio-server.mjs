@@ -20,13 +20,13 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    { name: 'echo', description: 'Echo text back', inputSchema: ECHO_SCHEMA },
-    { name: 'fail', description: 'Always fails', inputSchema: { type: 'object' } },
+    { name: 'get_usage_stats', description: 'Echo text back', inputSchema: ECHO_SCHEMA },
+    { name: 'get_config', description: 'Always fails', inputSchema: { type: 'object' } },
   ],
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  if (req.params.name === 'echo') return { content: [{ type: 'text', text: `echo: ${req.params.arguments.text}` }] };
+  if (req.params.name === 'get_usage_stats') return { content: [{ type: 'text', text: `echo: ${req.params.arguments.text}` }] };
   return { content: [{ type: 'text', text: 'boom' }], isError: true };
 });
 

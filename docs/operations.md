@@ -46,7 +46,17 @@ titian runtime check
 titian runtime update
 ```
 
-`check` builds and validates a temporary runtime without replacing the active one. `install` is for first use and refuses an existing runtime. `update` replaces the runtime, restarts active services, and retains the previous runtime for rollback. The HTTP bridge is stateless, so clients do not lose a stored MCP session across the restart; calls already in flight are interrupted and must be retried. For production dependency upgrades, schedule a maintenance window or stage dependencies before restarting services.
+For workspaces created before permission version 2, choose their initial permissions explicitly:
+
+```sh
+titian runtime update --legacy-permissions readonly
+# Then choose a broader task policy only for the intended workspace:
+titian update example --template developer
+```
+
+The old `--command-mode` and `--allowed-commands` flags are removed. Legacy prefixes are never silently converted into broader operation grants. Existing credentials and URLs are retained. Without an explicit legacy choice, activation refuses before stopping services.
+
+`check` builds and validates a temporary runtime without replacing the active one. `install` is for first use and refuses an existing runtime. `update` replaces the runtime, restarts active services, and retains the previous runtime for rollback. The HTTP bridge is stateless, so clients do not lose a stored MCP transport session across the restart. In-flight calls are interrupted, while pending approvals and process ownership are discarded. A lost response does not prove an operation had no side effects: inspect its outcome before retrying writes or execution, and obtain a new approval when required. For production dependency upgrades, schedule a maintenance window or stage dependencies before restarting services. See [approval error handling](permissions.md#blocked-commands-and-approval-errors).
 
 ## Tests
 
@@ -56,7 +66,7 @@ npm run test:manager
 npm run test:dependencies
 ```
 
-These checks use temporary state. The dependency smoke test verifies image processing and spreadsheet round trips against patched dependencies.
+These checks use temporary state. The dependency smoke test verifies image processing and spreadsheet round trips against patched dependencies. Permission integration tests use a real HTTP bridge and local owner socket with a recording fixture executor; fixture commands never run on the host. `npm run test:permissions-runtime` additionally builds a temporary pinned runtime and exercises Desktop Commander on disposable files and harmless commands, without starting launchd or changing live services.
 
 The following integration checks act on the live installation:
 
@@ -69,7 +79,7 @@ Verification creates test OAuth clients but does not edit project source files. 
 
 ## Migrated connections
 
-A migrated root `/mcp` connection is represented by a project with `rootRoute: true` in the registry. Its issuer, ports and credentials are preserved. If its previous filesystem access was unrestricted, migration keeps that access; it does not claim to add isolation. New projects use `/projects/<slug>/mcp`.
+A migrated root `/mcp` connection is represented by a project with `rootRoute: true` in the registry. Its issuer, ports and credentials are preserved. Transport migration retains its configured roots. Version-2 permission migration is a separate explicit choice and does not add OS isolation. New projects use `/projects/<slug>/mcp`.
 
 The old `mcp-project` command may remain as a symlink to `titian` for compatibility. It is not a separate application. See [migration.md](migration.md) before moving a running checkout.
 
@@ -85,4 +95,20 @@ titian update example --capabilities
 
 The last command clears labels. Labels use lowercase letters, digits and hyphens. They are not OS permissions or MCP protocol capability declarations; no framework or command availability is inferred from a label. Changing metadata restarts the affected project's services while preserving its URL and credentials. Existing projects default to an empty capability list.
 
-Metadata contains local paths, so it is served through the authenticated MCP channel. Do not publish it in OAuth discovery documents.
+## Permissions and approvals
+
+Use `titian update example --permissions readonly|editor|custom|unrestricted` to choose a preset (supply one value). Task templates use `--template developer|documents|data-analysis`. Custom policies accept repeatable `--allow`, `--ask`, and `--deny` operation flags or an owner-authored `--policy-file`.
+
+```sh
+titian update example --template developer
+titian permissions example
+titian approvals example list
+titian approvals example show REQUEST_ID
+titian approvals example approve REQUEST_ID
+```
+
+Owner decisions require an interactive terminal. They are sent to an account-owned Unix socket, never through MCP or a public HTTP endpoint. The owner reviews the exact request and types a confirmation. The assistant then calls `titian_resume`; approval itself does not execute anything. An explicit `deny` cannot be approved once.
+
+Updates restart the project and discard outstanding approvals and session ownership. Add/update verifies the effective policy before reporting success; runtime or policy mismatches trigger rollback. `permissions` reports unverified for an offline/old runtime. No effective policy is inferred from the registry alone.
+
+See [permission semantics, migration and limits](permissions.md). Metadata contains local paths, so it is served through the authenticated MCP channel, not public OAuth discovery documents.

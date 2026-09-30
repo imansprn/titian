@@ -25,7 +25,7 @@ let bridge, base;
 before(async () => {
   const port = await freePort();
   bridge = spawn(process.execPath, [BRIDGE], {
-    env: { ...process.env, MCP_BRIDGE_PORT: String(port), MCP_STDIO_COMMAND: process.execPath, MCP_STDIO_WRAPPER: FAKE_SERVER, MCP_PROJECT_SLUG: 'test-project', MCP_PROJECT_ROOTS: JSON.stringify(['/tmp/project-root']), MCP_PROJECT_CAPABILITIES: JSON.stringify(['mobile', 'test']) },
+    env: { ...process.env, MCP_AUTH_TOKEN: 'bridge-test-token', MCP_PERMISSION_POLICY: JSON.stringify({version: 2, preset: 'unrestricted', rules: {}}), MCP_BRIDGE_PORT: String(port), MCP_STDIO_COMMAND: process.execPath, MCP_STDIO_WRAPPER: FAKE_SERVER, MCP_PROJECT_SLUG: 'test-project', MCP_PROJECT_ROOTS: JSON.stringify(['/tmp/project-root']), MCP_PROJECT_CAPABILITIES: JSON.stringify(['mobile', 'test']) },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let stderr = '';
@@ -51,7 +51,7 @@ const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { prot
 function rpc(body, headers = {}) {
   return fetch(`${base}/mcp`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept: ACCEPT, ...headers },
+    headers: { authorization: 'Bearer bridge-test-token', 'content-type': 'application/json', accept: ACCEPT, ...headers },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
 }
@@ -93,25 +93,25 @@ describe('MCP proxying through the SDK client', () => {
   let client;
   before(async () => {
     client = new Client({ name: 'bridge-test', version: '1.0.0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: 'Bearer bridge-test-token' } } }));
   });
   after(() => client.close());
 
   it('lists tools with their raw input schemas', async () => {
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name), ['echo', 'fail', 'titian_project_info']);
-    const echo = tools.find((t) => t.name === 'echo');
+    assert.deepEqual(tools.map((t) => t.name), ['get_usage_stats', 'get_config', 'titian_project_info', 'titian_permissions', 'titian_resume']);
+    const echo = tools.find((t) => t.name === 'get_usage_stats');
     assert.deepEqual(echo.inputSchema, ECHO_SCHEMA);
   });
 
   it('forwards tool calls', async () => {
-    const res = await client.callTool({ name: 'echo', arguments: { text: 'hi' } });
+    const res = await client.callTool({ name: 'get_usage_stats', arguments: { text: 'hi' } });
     assert.deepEqual(res.content, [{ type: 'text', text: 'echo: hi' }]);
     assert.equal(res.isError, false);
   });
 
   it('preserves isError from the stdio server', async () => {
-    const res = await client.callTool({ name: 'fail', arguments: {} });
+    const res = await client.callTool({ name: 'get_config', arguments: {} });
     assert.equal(res.isError, true);
   });
 
@@ -167,11 +167,11 @@ describe('stateless transport handling', () => {
     assert.equal(res.status, 200);
     const body = await readRpc(res);
     assert.equal(body.id, 42);
-    assert.equal(body.result.tools.length, 3);
+    assert.equal(body.result.tools.length, 5);
   });
 
   it('accepts tools/call without a session header', async () => {
-    const res = await rpc({ jsonrpc: '2.0', id: 43, method: 'tools/call', params: { name: 'echo', arguments: { text: 'sessionless' } } });
+    const res = await rpc({ jsonrpc: '2.0', id: 43, method: 'tools/call', params: { name: 'get_usage_stats', arguments: { text: 'sessionless' } } });
     assert.equal(res.status, 200);
     const body = await readRpc(res);
     assert.deepEqual(body.result.content, [{ type: 'text', text: 'echo: sessionless' }]);
@@ -180,7 +180,7 @@ describe('stateless transport handling', () => {
   it('ignores a stale session header instead of rejecting the request', async () => {
     const res = await rpc({ jsonrpc: '2.0', id: 44, method: 'tools/list' }, { 'mcp-session-id': 'stale-after-restart' });
     assert.equal(res.status, 200);
-    assert.equal((await readRpc(res)).result.tools.length, 3);
+    assert.equal((await readRpc(res)).result.tools.length, 5);
   });
 
   it('returns 405 for GET and DELETE because stateless mode has no session stream', async () => {
@@ -191,12 +191,12 @@ describe('stateless transport handling', () => {
   it('ignores an unsupported MCP-Protocol-Version transport header', async () => {
     const res = await rpc({ jsonrpc: '2.0', id: 45, method: 'tools/list' }, { 'mcp-protocol-version': '2099-01-01' });
     assert.equal(res.status, 200);
-    assert.equal((await readRpc(res)).result.tools.length, 3);
+    assert.equal((await readRpc(res)).result.tools.length, 5);
   });
 
   it('handles concurrent sessionless requests independently', async () => {
     const calls = ['a', 'b'].map((text) => rpc({
-      jsonrpc: '2.0', id: text, method: 'tools/call', params: { name: 'echo', arguments: { text } },
+      jsonrpc: '2.0', id: text, method: 'tools/call', params: { name: 'get_usage_stats', arguments: { text } },
     }));
     const responses = await Promise.all(calls);
     const bodies = await Promise.all(responses.map(readRpc));

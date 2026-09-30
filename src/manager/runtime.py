@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import manage
+import permissions
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 ROOT = manage.ROOT
@@ -44,22 +45,45 @@ def build():
         shutil.copy2(APP_ROOT / 'src/bridge/server.mjs', stage / 'bridge/server.mjs')
         shutil.copy2(APP_ROOT / 'src/auth/proxy.cjs', stage / 'auth/proxy.cjs')
         shutil.copy2(APP_ROOT / 'src/bridge/stdio.cjs', stage / 'bridge/stdio.cjs')
-        for script in ['bridge/server.mjs', 'auth/proxy.cjs', 'bridge/stdio.cjs', 'dc/dist/config.js']:
+        for name in ['policy.cjs', 'approvals.cjs', 'identity.cjs', 'permissions.json']:
+            shutil.copy2(APP_ROOT / 'src/bridge' / name, stage / 'bridge' / name)
+        for script in ['bridge/server.mjs', 'auth/proxy.cjs', 'bridge/stdio.cjs', 'bridge/policy.cjs', 'bridge/approvals.cjs', 'bridge/identity.cjs', 'dc/dist/config.js']:
             subprocess.run([manage.node_binary(), '--check', str(stage / script)], check=True)
-        (stage / 'build.json').write_text(json.dumps(EXPECTED, indent=2))
+        (stage / 'build.json').write_text(json.dumps({**EXPECTED, 'permissionVersion': 2}, indent=2))
         return stage
     except Exception:
         shutil.rmtree(stage)
         raise
 
 
-def activate(stage):
+def activate(stage, legacy_permissions=None):
     runtime = ROOT / 'runtime'
-    projects = [p for p in manage.load() if p.get('enabled', True)]
-    names = [manage.label(p['slug'], part) for p in projects for part in ['bridge', 'auth']]
+    original = manage.load()
+    legacy = [p['slug'] for p in original if 'permissions' not in p]
+    if legacy and legacy_permissions is None:
+        shutil.rmtree(stage)
+        raise ValueError('Legacy workspaces require an explicit permission choice: ' + ', '.join(legacy)
+                         + '. Run titian runtime update --legacy-permissions readonly (or editor/unrestricted).')
+    projects = []
+    for old in original:
+        p = dict(old)
+        p['permissions'] = permissions.validate(p.get('permissions', {'version': 2, 'preset': legacy_permissions or 'readonly', 'rules': {}}))
+        p.pop('commandMode', None)
+        p.pop('allowedCommands', None)
+        projects.append(p)
+    active = [p for p in projects if p.get('enabled', True)]
+    names = [manage.label(p['slug'], part) for p in active for part in ['bridge', 'auth']]
     running = [name for name in names if manage.loaded(name)]
     backup = ROOT / 'archives' / f'runtime-{time.time_ns()}'
     backup.parent.mkdir(exist_ok=True, mode=0o700)
+    # Save registry AND generated environment files, so activation rollback does
+    # not pair an old runtime with new policies (or vice versa).
+    files = {ROOT / 'projects.json': (ROOT / 'projects.json').read_bytes()}
+    for p in projects:
+        for part in ['bridge', 'auth']:
+            for folder in [ROOT / 'launchagents', manage.AGENTS]:
+                file = folder / (manage.label(p['slug'], part) + '.plist')
+                files[file] = file.read_bytes() if file.exists() else None
     swapped = False
     try:
         for name in running: manage.stop(name)
@@ -69,19 +93,30 @@ def activate(stage):
             if backup.exists(): os.replace(backup, runtime)
             raise
         swapped = True
-        for name in running: manage.launch('bootstrap', manage.DOMAIN, str(manage.AGENTS / (name + '.plist')))
         for p in projects:
+            for part in ['bridge', 'auth']:
+                name = manage.label(p['slug'], part) + '.plist'
+                data = manage.plist_for(p, part)
+                manage.atomic(ROOT / 'launchagents' / name, data, 0o644)
+                if p.get('enabled', True): manage.atomic(manage.AGENTS / name, data, 0o644)
+        manage.save(projects)
+        for name in running: manage.launch('bootstrap', manage.DOMAIN, str(manage.AGENTS / (name + '.plist')))
+        for p in active:
             if manage.label(p['slug'], 'bridge') in running:
                 manage.wait_health(p['bridgePort']); manage.wait_health(p['authPort'])
+                permissions.verify_effective(ROOT, p)
     except Exception:
         for name in running: manage.stop(name)
         if swapped:
             failed = ROOT / 'archives' / f'runtime-failed-{time.time_ns()}'
             os.replace(runtime, failed)
             if backup.exists(): os.replace(backup, runtime)
+        for file, content in files.items():
+            if content is None: file.unlink(missing_ok=True)
+            else: manage.atomic(file, content, 0o644)
         for name in running: manage.launch('bootstrap', manage.DOMAIN, str(manage.AGENTS / (name + '.plist')))
         raise
-    print('Runtime activated. Existing credentials and registry preserved.')
+    print('Runtime activated. Permissions verified for restarted services; stopped services remain unverified. Credentials preserved.')
 
 
 def main():
@@ -89,7 +124,10 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--install', action='store_true', help='Install a first runtime without starting services')
     mode.add_argument('--activate', action='store_true', help='Restart active project services using the checked runtime')
+    parser.add_argument('--legacy-permissions', choices=['readonly', 'editor', 'unrestricted'], help='Explicit policy for workspaces without a version-2 policy')
     args = parser.parse_args()
+    if args.legacy_permissions and not args.activate:
+        parser.error('--legacy-permissions requires runtime update')
     ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (ROOT / '.manage.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -101,7 +139,7 @@ def main():
                 raise RuntimeError('Runtime already exists; use --activate to update it.')
             os.replace(stage, ROOT / 'runtime')
             print('Runtime installed. Use titian add to start a project.')
-        elif args.activate: activate(stage)
+        elif args.activate: activate(stage, args.legacy_permissions)
         else:
             shutil.rmtree(stage)
             print('Pinned runtime build and syntax checks passed; active runtime unchanged.')

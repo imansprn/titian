@@ -9,6 +9,11 @@ titian/
   src/auth/proxy.cjs         shared OAuth validation
   src/bridge/server.mjs      project-aware MCP bridge
   src/bridge/stdio.cjs       child process lifecycle
+  src/bridge/policy.cjs      reviewed tool operations and scoped decisions
+  src/bridge/approvals.cjs   single-use approval gate and local owner socket
+  src/bridge/identity.cjs    authenticated execution identity
+  src/bridge/permissions.json shared presets, operations and task templates
+  src/manager/permissions.py owner policy and approval CLI
   src/manager/manage.py      registry and launchd management
   src/manager/runtime.py     pinned runtime build/install
   tests/                     unit and integration checks
@@ -26,3 +31,7 @@ The CLI is `titian init`, `titian add`, `titian list`, `titian doctor`, and the 
 Machine state lives in `.titian/`: manager settings, project registry, instances, logs, launch agent copies, archives, and generated runtime. Source paths are never inferred from the state directory. `TITIAN_DATA_DIR` can select another state location. Moving a running installation requires rewriting its installed service paths.
 
 Project root restrictions are not an operating-system sandbox. Terminal tools still have the permissions of the signed-in user.
+
+The bridge checks authenticated identity before dispatch, evaluates the operation policy and either forwards, returns a hard denial, or stores a pending approval. The owner CLI approves through a local Unix socket; the client explicitly resumes the stored request. No approval endpoint is exposed through MCP or HTTP. Pending approvals and client-owned process/search sessions are invalidated on bridge restart. Policy configuration is stored in the registry and copied into service environments; live effective policy is verified separately.
+
+This does not introduce multi-user OS isolation. Host execution can reach resources beyond structured file-tool scope. See [permissions](permissions.md) for the trust boundary, migration, and supported operations.

@@ -13,6 +13,14 @@
  */
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import fs from 'node:fs';
+import policyModule from './policy.cjs';
+import approvalModule from './approvals.cjs';
+import identityModule from './identity.cjs';
+const { Policy, digest } = policyModule;
+const { ApprovalGate, ownerServer, response: permissionError } = approvalModule;
+const { authenticate } = identityModule;
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -33,6 +41,35 @@ const STDIO_WRAPPER = process.env.MCP_STDIO_WRAPPER || fileURLToPath(new URL('./
 
 const log = (...a) => console.error(`[mcp-http-bridge]`, ...a);
 
+if (!process.env.MCP_PERMISSION_POLICY && (process.env.MCP_COMMAND_MODE || process.env.MCP_ALLOWED_COMMANDS)) {
+  throw new Error('Legacy command policy detected. Migrate explicitly with titian runtime update --legacy-permissions readonly.');
+}
+const policy = new Policy({
+  policy: JSON.parse(process.env.MCP_PERMISSION_POLICY || '{"version":2,"preset":"readonly","rules":{}}'),
+  roots: JSON.parse(process.env.MCP_PROJECT_ROOTS || '[]'),
+  protectedPaths: [...JSON.parse(process.env.MCP_PROTECTED_PATHS || '[]'),
+    ...(process.env.MCP_DC_CONFIG_DIR ? [process.env.MCP_DC_CONFIG_DIR] : []),
+    fileURLToPath(new URL('.', import.meta.url))],
+  cwd: process.env.MCP_PROJECT_ROOT,
+  project: process.env.MCP_PROJECT_SLUG || 'titian',
+  executionContext: () => {
+    let config = {};
+    if (process.env.MCP_DC_CONFIG_DIR) {
+      const configPath = path.join(process.env.MCP_DC_CONFIG_DIR, 'config.json');
+      try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); }
+      catch (error) { if (error.code !== 'ENOENT') throw new Error('Backend configuration is unreadable.'); }
+    }
+    return { environmentHash: digest(backendEnv), nodeVersion: process.version,
+      shell: config.defaultShell || backendEnv.SHELL || 'backend default',
+      backendConfigHash: digest({ defaultShell: config.defaultShell ?? null,
+        blockedCommands: config.blockedCommands ?? null, allowedDirectories: config.allowedDirectories ?? null }) };
+  },
+});
+let ownerControl;
+const backendEnv = { ...process.env };
+for (const key of ['MCP_AUTH_TOKEN', 'MCP_OAUTH_SIGNING_KEY', 'MCP_OAUTH_PIN', 'RIPGREP_CONFIG_PATH']) delete backendEnv[key];
+
+
 // ---------------------------------------------------------------------------
 // 1. Connect to Desktop Commander over stdio (dc-wrapper runs npx in a detached
 //    process group and reaps it on stdin EOF / SIGTERM).
@@ -47,7 +84,7 @@ const stdioTransport = new StdioClientTransport({
   command: STDIO_COMMAND,
   args: [STDIO_WRAPPER],
   stderr: 'inherit',
-  env: { ...process.env },
+  env: backendEnv,
   cwd: process.env.MCP_PROJECT_ROOT,
 });
 stdioClient.onclose = () => {
@@ -57,6 +94,13 @@ stdioClient.onclose = () => {
   }
 };
 await stdioClient.connect(stdioTransport);
+const gate = new ApprovalGate(policy, (name, args) => stdioClient.callTool({ name, arguments: args }), {
+  audit: event => log('permission', JSON.stringify(event)),
+});
+if (process.env.MCP_DC_CONFIG_DIR) {
+  ownerControl = await ownerServer(path.join(process.env.MCP_DC_CONFIG_DIR, 'owner.sock'), gate);
+}
+
 
 async function backendHealthy() {
   if (shuttingDown) return false;
@@ -110,7 +154,14 @@ const metadataTool = {
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 };
-toolCatalog = [...toolCatalog.filter(tool => tool.name !== metadataTool.name), metadataTool];
+const permissionTools = [
+  { name: 'titian_permissions', description: 'Read the effective permission policy. Does not change permissions.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false } },
+  { name: 'titian_resume', description: 'Execute one stored request after local owner approval. A request ID is not approval. Single-use, expiring, bound to this authenticated client. Never approves requests.',
+    inputSchema: { type: 'object', properties: { requestId: { type: 'string' } }, required: ['requestId'], additionalProperties: false } },
+];
+toolCatalog = [...toolCatalog.filter(tool => ![metadataTool.name, ...permissionTools.map(t => t.name)].includes(tool.name)), metadataTool, ...permissionTools];
 resourceCatalog = [...resourceCatalog.filter(resource => resource.uri !== metadataUri), {
   uri: metadataUri, name: 'Titian project metadata', mimeType: 'application/json',
   description: 'Project identity, configured roots, and descriptive capability labels.',
@@ -125,33 +176,44 @@ resourceCatalog = [...resourceCatalog.filter(resource => resource.uri !== metada
 // Avoiding HTTP sessions also means a bridge restart cannot strand clients with
 // stale Mcp-Session-Id values.
 // ---------------------------------------------------------------------------
-function makeRequestServer() {
+function makeRequestServer(principal) {
   const server = new Server(
     { name: process.env.MCP_PROJECT_SLUG || 'titian', version: '1.0.0' },
-    { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: `This server handles ${process.env.MCP_SERVER_LABEL}. Project roots: ${process.env.MCP_PROJECT_ROOTS}. Use absolute file paths. Run commands in the appropriate project root. Terminal access runs as the macOS user and is not sandboxed. Project metadata: ${JSON.stringify(projectMetadata)}` },
+    { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: principal ? `This server handles ${process.env.MCP_SERVER_LABEL}. Project roots: ${process.env.MCP_PROJECT_ROOTS}. Use absolute file paths. Run commands in the appropriate project root. Terminal access runs as the macOS user and is not sandboxed. Project metadata: ${JSON.stringify(projectMetadata)}. Titian permissions are enforced for all tools. Approval requests never execute automatically; use titian_resume only after the owner approves locally.` : 'Authenticate to access workspace tools and metadata.' },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolCatalog }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: principal ? toolCatalog : toolCatalog.map(tool => ({ ...tool, description: 'Authenticate to use ' + tool.name + '.' })) }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    if (!principal) return permissionError('authentication_required', 'Authentication is required before accessing workspace tools.');
     if (name === metadataTool.name) return { content: [{ type: 'text', text: JSON.stringify(projectMetadata) }], structuredContent: projectMetadata, isError: false };
+    if (name === 'titian_permissions') {
+      const effective = policy.effective();
+      return { content: [{ type: 'text', text: JSON.stringify(effective) }], structuredContent: effective, isError: false };
+    }
+    if (name === 'titian_resume') {
+      if (!args || Object.keys(args).length !== 1 || typeof args.requestId !== 'string') return permissionError('invalid_arguments', 'Only requestId is accepted. Approval cannot be supplied by the caller.');
+      return gate.resume(args.requestId, principal);
+    }
     if (!toolCatalog.some(t => t.name === name)) throw new Error('Tool unavailable for project server');
-    const result = await stdioClient.callTool({ name, arguments: args });
-    return { ...result, isError: result.isError ?? false };
+    return gate.call(name, args || {}, principal);
   });
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: resourceCatalog }));
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: !principal ? [] : policy.config.preset === 'unrestricted' ? resourceCatalog : resourceCatalog.filter(r => r.uri === metadataUri) }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+    if (!principal) throw new Error('Authentication required');
     if (req.params.uri === metadataUri) return { contents: [{ uri: metadataUri, mimeType: 'application/json', text: JSON.stringify(projectMetadata) }] };
+    if (policy.config.preset !== 'unrestricted') throw new Error('Backend resources are not mapped for restricted policies.');
     const result = await stdioClient.readResource({ uri: req.params.uri });
     return { contents: result.contents };
   });
 
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: promptCatalog }));
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: principal && policy.config.preset === 'unrestricted' ? promptCatalog : [] }));
 
   server.setRequestHandler(GetPromptRequestSchema, async (req) => {
+    if (!principal || policy.config.preset !== 'unrestricted') throw new Error('Backend prompts require authenticated unrestricted access.');
     const result = await stdioClient.getPrompt({ name: req.params.name, arguments: req.params.arguments });
     return { messages: result.messages };
   });
@@ -169,7 +231,7 @@ function sendJson(res, status, obj) {
 }
 
 async function handleStatelessPost(req, res, parsed, rawLength) {
-  const srv = makeRequestServer();
+  const srv = makeRequestServer(authenticate(req));
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   transport.onerror = (e) => log(`[transport onerror] ${e?.message}`);
 
@@ -221,7 +283,10 @@ httpServer = http.createServer(async (req, res) => {
 
   if (req.method === 'POST') {
     let raw = '';
-    for await (const chunk of req) raw += chunk;
+    for await (const chunk of req) {
+      raw += chunk;
+      if (Buffer.byteLength(raw) > 1048576) { sendJson(res, 413, { error: 'Request too large' }); return; }
+    }
     let parsed;
     try { parsed = raw ? JSON.parse(raw) : null; }
     catch { sendJson(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }); return; }
@@ -258,6 +323,8 @@ async function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(heartbeat);
+  if (ownerControl) ownerControl.close();
+  gate.requests.clear();
   log(`shutting down (exit ${exitCode})`);
   // Set the deadline before waiting for stdio cleanup; broken children may hang.
   setTimeout(() => process.exit(exitCode), 2000);
