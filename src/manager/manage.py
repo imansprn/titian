@@ -401,7 +401,7 @@ def doctor(args, projects):
         checks = []
         for part in ['auth', 'bridge']:
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{p[part + 'Port']}/healthz", timeout=3) as r:
+                with urllib.request.urlopen(f"http://127.0.0.1:{p[part + 'Port']}/healthz", timeout=7) as r:
                     checks.append((part, r.status == 200))
             except OSError: checks.append((part, False))
         try:

@@ -3,16 +3,14 @@
  * mcp-http-bridge — stdio MCP → Streamable HTTP bridge.
  *
  * Drop-in replacement for supergateway. Uses the official MCP SDK
- * StreamableHTTPServerTransport, which keys sessions by Mcp-Session-Id header
- * (in-memory) rather than by TCP connection — so sessions survive clients that
- * open a fresh connection per request (e.g. Claude Desktop).
+ * StreamableHTTPServerTransport in stateless mode, so every POST is independent
+ * and bridge restarts cannot invalidate an in-memory Mcp-Session-Id.
  *
  * Implemented as a transport-level proxy with the low-level Server class:
  * every tools/call, resources/read, prompts/get is forwarded verbatim to the
  * stdio child (Desktop Commander) and the raw JSON schemas are passed through
  * untouched (no Zod re-encoding, which was the McpServer pitfall).
  */
-import { randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -39,6 +37,11 @@ const log = (...a) => console.error(`[mcp-http-bridge]`, ...a);
 // 1. Connect to Desktop Commander over stdio (dc-wrapper runs npx in a detached
 //    process group and reaps it on stdin EOF / SIGTERM).
 // ---------------------------------------------------------------------------
+let shuttingDown = false;
+let httpServer;
+let heartbeat;
+let pendingProbe;
+
 const stdioClient = new Client({ name: 'mcp-http-bridge', version: '1.0.0' });
 const stdioTransport = new StdioClientTransport({
   command: STDIO_COMMAND,
@@ -47,7 +50,27 @@ const stdioTransport = new StdioClientTransport({
   env: { ...process.env },
   cwd: process.env.MCP_PROJECT_ROOT,
 });
+stdioClient.onclose = () => {
+  if (!shuttingDown) {
+    log('Desktop Commander disconnected; exiting so launchd can restart the bridge');
+    void shutdown(1);
+  }
+};
 await stdioClient.connect(stdioTransport);
+
+async function backendHealthy() {
+  if (shuttingDown) return false;
+  if (!pendingProbe) {
+    pendingProbe = stdioClient.ping({ timeout: 5000 })
+      .then(() => true, error => { log('Desktop Commander probe failed:', error.message); return false; })
+      .finally(() => { pendingProbe = undefined; });
+  }
+  return pendingProbe;
+}
+heartbeat = setInterval(async () => {
+  if (!(await backendHealthy()) && !shuttingDown) void shutdown(1);
+}, 30000);
+heartbeat.unref();
 log('connected to Desktop Commander over stdio');
 
 // ---------------------------------------------------------------------------
@@ -94,10 +117,15 @@ resourceCatalog = [...resourceCatalog.filter(resource => resource.uri !== metada
 }];
 
 // ---------------------------------------------------------------------------
-// 3. Build a fresh low-level Server per HTTP session, proxying every request
-//    verbatim to the stdio client.
+// 3. Build a fresh low-level Server per HTTP request, proxying every request
+//    verbatim to the long-lived stdio client.
+//
+// The HTTP side is deliberately stateless. Titian does not keep MCP client
+// state in the bridge; Desktop Commander owns the long-lived project process.
+// Avoiding HTTP sessions also means a bridge restart cannot strand clients with
+// stale Mcp-Session-Id values.
 // ---------------------------------------------------------------------------
-function makeSessionServer() {
+function makeRequestServer() {
   const server = new Server(
     { name: process.env.MCP_PROJECT_SLUG || 'titian', version: '1.0.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: `This server handles ${process.env.MCP_SERVER_LABEL}. Project roots: ${process.env.MCP_PROJECT_ROOTS}. Use absolute file paths. Run commands in the appropriate project root. Terminal access runs as the macOS user and is not sandboxed. Project metadata: ${JSON.stringify(projectMetadata)}` },
@@ -132,23 +160,47 @@ function makeSessionServer() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Session registry + HTTP routing.
+// 4. Stateless HTTP routing.
 // ---------------------------------------------------------------------------
-const sessions = new Map(); // sessionId -> { server, transport }
-
 function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
   res.end(body);
 }
 
-const httpServer = http.createServer(async (req, res) => {
+async function handleStatelessPost(req, res, parsed, rawLength) {
+  const srv = makeRequestServer();
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  transport.onerror = (e) => log(`[transport onerror] ${e?.message}`);
+
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    try { await transport.close(); } catch (_) {}
+    try { await srv.close(); } catch (_) {}
+  };
+  res.once('close', () => { cleanup(); });
+
+  await srv.connect(transport);
+  log(`POST stateless bodyLen=${rawLength} method=${parsed?.method || 'UNKNOWN'} suppliedSession=${Boolean(req.headers['mcp-session-id'])}`);
+  try {
+    await transport.handleRequest(req, res, parsed);
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+httpServer = http.createServer(async (req, res) => {
   let pathname;
   try { pathname = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname; }
   catch { res.writeHead(400).end(); return; }
 
   if (pathname === '/healthz' || pathname === '/health') {
-    res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
+    const healthy = await backendHealthy();
+    res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'text/plain' }).end(healthy ? 'ok' : 'backend unavailable');
+    if (!healthy && !shuttingDown) void shutdown(1);
     return;
   }
   if (pathname === '/') {
@@ -157,25 +209,15 @@ const httpServer = http.createServer(async (req, res) => {
   }
   if (pathname !== '/mcp') { res.writeHead(404).end(); return; }
 
-  // Strip the MCP-Protocol-Version header. The SDK (1.30.0) only supports up to
-  // 2025-11-25 and hard-rejects newer values (e.g. clients sending 2026-07-28)
-  // on post-initialize requests. Version negotiation happens via the initialize
-  // body, which the SDK handles gracefully — so dropping the header is safe and
-  // future-proofs against any client protocol version.
-  // NOTE: @hono/node-server builds the Web Request from `rawHeaders` (not the
-  // parsed `headers` object), so both must be stripped.
+  // SDK 1.30.0 predates the 2026 protocol version. Version negotiation still
+  // happens in the initialize body, so strip a newer transport header before
+  // handing the request to the SDK. @hono/node-server reads rawHeaders too.
   delete req.headers['mcp-protocol-version'];
   if (req.rawHeaders) {
     for (let i = req.rawHeaders.length - 2; i >= 0; i -= 2) {
-      if (req.rawHeaders[i].toLowerCase() === 'mcp-protocol-version') {
-        req.rawHeaders.splice(i, 2);
-      }
+      if (req.rawHeaders[i].toLowerCase() === 'mcp-protocol-version') req.rawHeaders.splice(i, 2);
     }
   }
-
-  const sessionId = Array.isArray(req.headers['mcp-session-id'])
-    ? req.headers['mcp-session-id'][0]
-    : req.headers['mcp-session-id'];
 
   if (req.method === 'POST') {
     let raw = '';
@@ -184,60 +226,44 @@ const httpServer = http.createServer(async (req, res) => {
     try { parsed = raw ? JSON.parse(raw) : null; }
     catch { sendJson(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }); return; }
 
-    // server/discover (2026 spec, SEP-2577) isn't supported by SDK 1.30.0; replying
-    // method-not-found makes the client fall back to the classic initialize handshake.
+    // server/discover (2026 spec, SEP-2577) isn't supported by SDK 1.30.0;
+    // method-not-found makes legacy-compatible clients fall back to initialize.
     if (parsed && parsed.method === 'server/discover') {
       log(`POST server/discover id=${parsed.id} -> method not found (client should fall back to initialize)`);
       sendJson(res, 200, { jsonrpc: '2.0', id: parsed.id ?? null, error: { code: -32601, message: 'Method not found: server/discover' } });
       return;
     }
 
-    if (sessionId && sessions.has(sessionId)) {
-      log(`POST existing session ${sessionId} bodyLen=${raw.length} parsed=${parsed ? parsed.method : 'NULL'}`);
-      await sessions.get(sessionId).transport.handleRequest(req, res, parsed);
-    } else if (!sessionId && parsed && parsed.method === 'initialize') {
-      log(`POST initialize (new session)`);
-      const srv = makeSessionServer();
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (sid) => { log(`onsessioninitialized sid=${sid}`); sessions.set(sid, { server: srv, transport }); },
-        onsessionclosed: (sid) => { log(`onsessionclosed sid=${sid}`); sessions.delete(sid); },
-      });
-      await srv.connect(transport);
-      transport.onerror = (e) => log(`[transport onerror] ${e?.message}`);
-      await transport.handleRequest(req, res, parsed);
-    } else {
-      log(`POST REJECT: sessionId=${sessionId} inMap=${sessionId ? sessions.has(sessionId) : false} method=${parsed?.method}`);
-      // Echo the request id so the client can correlate this error and re-initialize.
-      sendJson(res, 400, { jsonrpc: '2.0', error: { code: -32000, message: 'Invalid or missing session' }, id: parsed?.id ?? null });
+    try {
+      await handleStatelessPost(req, res, parsed, raw.length);
+    } catch (error) {
+      log(`POST failed method=${parsed?.method || 'UNKNOWN'}: ${error?.stack || error}`);
+      if (!res.headersSent) sendJson(res, 500, { jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: parsed?.id ?? null });
+      else res.destroy();
     }
-  } else if (req.method === 'GET') {
-    if (sessionId && sessions.has(sessionId)) {
-      await sessions.get(sessionId).transport.handleRequest(req, res);
-    } else {
-      res.writeHead(400).end('No valid session');
-    }
-  } else if (req.method === 'DELETE') {
-    if (sessionId && sessions.has(sessionId)) {
-      await sessions.get(sessionId).transport.handleRequest(req, res);
-    } else {
-      res.writeHead(400).end('No valid session');
-    }
+  } else if (req.method === 'GET' || req.method === 'DELETE') {
+    // Stateless Streamable HTTP has no session stream to resume or terminate.
+    res.writeHead(405, { Allow: 'POST' }).end();
   } else {
-    res.writeHead(405).end();
+    res.writeHead(405, { Allow: 'POST' }).end();
   }
 });
 
-httpServer.listen(PORT, HOST, () => log(`listening on ${HOST}:${PORT}`));
+httpServer.listen(PORT, HOST, () => log(`listening on ${HOST}:${httpServer.address().port} (stateless HTTP)`));
 
 // ---------------------------------------------------------------------------
 // 5. Graceful shutdown.
 // ---------------------------------------------------------------------------
-async function shutdown() {
-  log('shutting down');
+async function shutdown(exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(heartbeat);
+  log(`shutting down (exit ${exitCode})`);
+  // Set the deadline before waiting for stdio cleanup; broken children may hang.
+  setTimeout(() => process.exit(exitCode), 2000);
   try { await stdioClient.close(); } catch (_) {}
-  httpServer.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 2000).unref();
+  if (httpServer?.listening) httpServer.close(() => process.exit(exitCode));
+  else process.exit(exitCode);
 }
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+process.on('SIGTERM', () => { void shutdown(0); });
+process.on('SIGINT', () => { void shutdown(0); });

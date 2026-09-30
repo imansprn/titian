@@ -46,7 +46,7 @@ titian runtime check
 titian runtime update
 ```
 
-`check` builds and validates a temporary runtime without replacing the active one. `install` is for first use and refuses an existing runtime. `update` replaces the runtime, restarts active services, and retains the previous runtime for rollback. For production dependency upgrades, schedule a maintenance window or stage dependencies before restarting services.
+`check` builds and validates a temporary runtime without replacing the active one. `install` is for first use and refuses an existing runtime. `update` replaces the runtime, restarts active services, and retains the previous runtime for rollback. The HTTP bridge is stateless, so clients do not lose a stored MCP session across the restart; calls already in flight are interrupted and must be retried. For production dependency upgrades, schedule a maintenance window or stage dependencies before restarting services.
 
 ## Tests
 

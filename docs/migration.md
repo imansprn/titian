@@ -17,6 +17,6 @@ Remove `project-mcp/` and `http-bridge/` from the active repository. Move their 
 
 ## Compatibility and rollback
 
-Existing URLs and credentials remain valid. In-memory MCP sessions reconnect after restart. Credentials are not mass-rotated by this migration. Backups contain private OAuth state and must never be published.
+Existing URLs and credentials remain valid. The MCP bridge is stateless, so there is no in-memory HTTP session to restore after restart; only calls already in flight need to be retried. Credentials are not mass-rotated by this migration. Backups contain private OAuth state and must never be published.
 
 Rollback restores the saved launch agents, registry, source layout and runtime from the private backup. Do not run old and new installations simultaneously against the same ports or OAuth state.

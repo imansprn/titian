@@ -64,14 +64,14 @@ async function readRpc(res) {
   return JSON.parse(data.slice(6));
 }
 
-async function openRawSession() {
+async function initializeRawClient() {
   const res = await rpc(initialize);
   assert.equal(res.status, 200);
-  await readRpc(res);
-  const sessionId = res.headers.get('mcp-session-id');
-  assert.ok(sessionId);
-  await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' }, { 'mcp-session-id': sessionId });
-  return sessionId;
+  const body = await readRpc(res);
+  assert.equal(res.headers.get('mcp-session-id'), null);
+  const notified = await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  assert.equal(notified.status, 202);
+  return body;
 }
 
 describe('plain HTTP routes', () => {
@@ -141,7 +141,7 @@ describe('MCP proxying through the SDK client', () => {
   });
 });
 
-describe('session handling', () => {
+describe('stateless transport handling', () => {
   it('replies method-not-found to server/discover so clients fall back to initialize', async () => {
     const res = await rpc({ jsonrpc: '2.0', id: 7, method: 'server/discover' });
     assert.equal(res.status, 200);
@@ -156,37 +156,50 @@ describe('session handling', () => {
     assert.equal((await res.json()).error.code, -32700);
   });
 
-  it('rejects non-initialize requests without a session and echoes the id', async () => {
+  it('initializes without issuing an HTTP session id', async () => {
+    const body = await initializeRawClient();
+    assert.equal(body.id, 1);
+    assert.ok(body.result);
+  });
+
+  it('accepts tools/list without a session header', async () => {
     const res = await rpc({ jsonrpc: '2.0', id: 42, method: 'tools/list' });
-    assert.equal(res.status, 400);
-    const body = await res.json();
+    assert.equal(res.status, 200);
+    const body = await readRpc(res);
     assert.equal(body.id, 42);
-    assert.equal(body.error.code, -32000);
+    assert.equal(body.result.tools.length, 3);
   });
 
-  it('rejects an unknown session id', async () => {
-    const res = await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, { 'mcp-session-id': 'does-not-exist' });
-    assert.equal(res.status, 400);
+  it('accepts tools/call without a session header', async () => {
+    const res = await rpc({ jsonrpc: '2.0', id: 43, method: 'tools/call', params: { name: 'echo', arguments: { text: 'sessionless' } } });
+    assert.equal(res.status, 200);
+    const body = await readRpc(res);
+    assert.deepEqual(body.result.content, [{ type: 'text', text: 'echo: sessionless' }]);
   });
 
-  it('rejects GET and DELETE without a session', async () => {
-    assert.equal((await fetch(`${base}/mcp`, { headers: { accept: 'text/event-stream' } })).status, 400);
-    assert.equal((await fetch(`${base}/mcp`, { method: 'DELETE' })).status, 400);
-  });
-
-  it('ignores an unsupported MCP-Protocol-Version header', async () => {
-    const sessionId = await openRawSession();
-    const res = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' },
-      { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2099-01-01' });
+  it('ignores a stale session header instead of rejecting the request', async () => {
+    const res = await rpc({ jsonrpc: '2.0', id: 44, method: 'tools/list' }, { 'mcp-session-id': 'stale-after-restart' });
     assert.equal(res.status, 200);
     assert.equal((await readRpc(res)).result.tools.length, 3);
   });
 
-  it('closes a session on DELETE', async () => {
-    const sessionId = await openRawSession();
-    const del = await fetch(`${base}/mcp`, { method: 'DELETE', headers: { 'mcp-session-id': sessionId } });
-    assert.equal(del.status, 200);
-    const after = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, { 'mcp-session-id': sessionId });
-    assert.equal(after.status, 400);
+  it('returns 405 for GET and DELETE because stateless mode has no session stream', async () => {
+    assert.equal((await fetch(`${base}/mcp`, { headers: { accept: 'text/event-stream' } })).status, 405);
+    assert.equal((await fetch(`${base}/mcp`, { method: 'DELETE' })).status, 405);
+  });
+
+  it('ignores an unsupported MCP-Protocol-Version transport header', async () => {
+    const res = await rpc({ jsonrpc: '2.0', id: 45, method: 'tools/list' }, { 'mcp-protocol-version': '2099-01-01' });
+    assert.equal(res.status, 200);
+    assert.equal((await readRpc(res)).result.tools.length, 3);
+  });
+
+  it('handles concurrent sessionless requests independently', async () => {
+    const calls = ['a', 'b'].map((text) => rpc({
+      jsonrpc: '2.0', id: text, method: 'tools/call', params: { name: 'echo', arguments: { text } },
+    }));
+    const responses = await Promise.all(calls);
+    const bodies = await Promise.all(responses.map(readRpc));
+    assert.deepEqual(bodies.map((body) => body.result.content[0].text).sort(), ['echo: a', 'echo: b']);
   });
 });

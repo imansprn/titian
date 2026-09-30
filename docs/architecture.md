@@ -12,12 +12,14 @@ titian/
   src/manager/manage.py      registry and launchd management
   src/manager/runtime.py     pinned runtime build/install
   tests/                     unit and integration checks
-  docs/                      architecture, operation, migration
+  docs/                      architecture, operation, migration, troubleshooting
   package.json               one dependency graph and scripts
   .titian/                   ignored machine state and generated runtime
 ```
 
 The gateway listens on loopback port 8300. Projects have independent auth and bridge processes, credentials, and root configuration. Normal project URLs are `/projects/<slug>/mcp`. Migrated root `/mcp` connections retain their issuer and credentials as a managed compatibility project, without a separate installation flow.
+
+The bridge uses stateless Streamable HTTP. Every POST gets a fresh MCP server/transport that forwards to the project's long-lived Desktop Commander stdio process. Titian does not persist or require `Mcp-Session-Id`; optional GET SSE streams and DELETE session termination return HTTP 405. This keeps client requests valid across bridge restarts, except for calls that were already in flight when the process stopped.
 
 The CLI is `titian init`, `titian add`, `titian list`, `titian doctor`, and the other lifecycle commands. `titian runtime install` installs a first runtime; `titian runtime update` rebuilds and restarts active services. Dependencies are installed once at the repository root.
 

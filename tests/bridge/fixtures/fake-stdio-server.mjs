@@ -1,3 +1,5 @@
+import { writeFileSync } from 'node:fs';
+if (process.env.TEST_BACKEND_PID_FILE) writeFileSync(process.env.TEST_BACKEND_PID_FILE, String(process.pid));
 // Minimal stdio MCP server standing in for Desktop Commander in bridge tests.
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';

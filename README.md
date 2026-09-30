@@ -194,7 +194,7 @@ npm run test:dependencies
 npm audit
 ```
 
-CI checks Linux Node 22/24/26 and macOS Node 24, including runtime construction. Live integration tests are opt-in: [operations](docs/operations.md). More detail: [architecture](docs/architecture.md), [migration](docs/migration.md), and [security](SECURITY.md).
+CI checks Linux Node 22/24/26 and macOS Node 24, including runtime construction. Live integration tests are opt-in: [operations](docs/operations.md). More detail: [architecture](docs/architecture.md), [migration](docs/migration.md), [troubleshooting](docs/troubleshooting.md), and [security](SECURITY.md).
 
 ## License
 
