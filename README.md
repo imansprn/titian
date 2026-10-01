@@ -225,7 +225,7 @@ Removing a project archives its OAuth state and stops its services. It never del
 |---|---|
 | `titian: command not found` | Use `./bin/titian` from the repository root, or check the symlink and PATH above. |
 | Gateway is not running | Run `./bin/titian status`; start it with `init --origin YOUR_ORIGIN --start-gateway`. |
-| Local `doctor` passes but the client cannot connect | Check your HTTPS hostname, `tailscale funnel status`, and that the Mac is awake. Run `doctor --public`. |
+| Local `doctor` passes but the client cannot connect | Check your HTTPS hostname, `tailscale funnel status`, and that the Mac is awake. Run `doctor --public`; if only one public IP fails, see [troubleshooting](docs/troubleshooting.md#doctor---public-fails-on-one-public-ip). |
 | OAuth approval fails | Use the PIN for that project's slug and retry the connection from the client. |
 | Runtime is missing | Run `npm ci`, then `./bin/titian runtime install`. |
 

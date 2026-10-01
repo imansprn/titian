@@ -24,6 +24,40 @@ POST stateless bodyLen=863 method=tools/call suppliedSession=false
 `suppliedSession=true` is also valid. A stale session header from an older
 client connection is ignored because Titian does not use HTTP session state.
 
+## `doctor --public` fails on one public IP
+
+`titian doctor --public` resolves the configured HTTPS hostname through public
+DNS, then probes each advertised A record with `curl --resolve`. Local checks
+can pass while one public IP fails:
+
+```text
+example: auth=OK, bridge=OK, oauth-routing=OK, mcp=OK, public-203.0.113.10=OK, public-203.0.113.11(curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL ...)=FAIL
+```
+
+In this case, Titian's local auth, gateway and bridge are healthy. The failure
+is on the public HTTPS path for that one address. With Tailscale Funnel, this
+usually means DNS is advertising a stale or unhealthy Funnel edge. Clients may
+fail intermittently depending on which address they receive.
+
+Verify the local Funnel mapping:
+
+```sh
+tailscale funnel status
+```
+
+For a Titian gateway, the Funnel target should point to `http://127.0.0.1:8300`.
+If the mapping is correct but one public IP still fails TLS, refresh Funnel:
+
+```sh
+tailscale funnel reset
+tailscale funnel --bg http://127.0.0.1:8300
+titian doctor --public
+```
+
+If the same public IP continues to fail after a refresh, wait briefly and retry,
+or check Tailscale status for an edge outage. A persistent single-IP TLS failure
+is outside the Titian project services.
+
 ## Why the bridge is stateless
 
 The previous bridge issued session IDs and stored transports in memory:
