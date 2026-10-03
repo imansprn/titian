@@ -14,6 +14,7 @@ titian/
   src/bridge/identity.cjs    authenticated execution identity
   src/bridge/permissions.json shared presets, operations and task templates
   src/manager/permissions.py owner policy and approval CLI
+  src/manager/network.py  external provider configuration and Tunnel lifecycle
   src/manager/manage.py      registry and launchd management
   src/manager/runtime.py     pinned runtime build/install
   tests/                     unit and integration checks
@@ -22,7 +23,7 @@ titian/
   .titian/                   ignored machine state and generated runtime
 ```
 
-The gateway listens on loopback port 8300. Projects have independent auth and bridge processes, credentials, and root configuration. Normal project URLs are `/projects/<slug>/mcp`. Migrated root `/mcp` connections retain their issuer and credentials as a managed compatibility project, without a separate installation flow.
+The gateway listens on loopback port 8300. Projects have independent auth and bridge processes, credentials, and root configuration. Normal project URLs are `/projects/<slug>/mcp`. Migrated root `/mcp` connections retain their issuer and credentials as a managed compatibility project, without a separate installation flow. An external publisher such as Tailscale Funnel or a reverse proxy forwards the public HTTPS origin to this loopback gateway; Titian's project routes remain behind the gateway.
 
 The bridge uses stateless Streamable HTTP. Every POST gets a fresh MCP server/transport that forwards to the project's long-lived Desktop Commander stdio process. Titian does not persist or require `Mcp-Session-Id`; optional GET SSE streams and DELETE session termination return HTTP 405. This keeps client requests valid across bridge restarts, except for calls that were already in flight when the process stopped.
 
@@ -35,3 +36,9 @@ Project root restrictions are not an operating-system sandbox. Terminal tools st
 The bridge checks authenticated identity before dispatch, evaluates the operation policy and either forwards, returns a hard denial, or stores a pending approval. The owner CLI approves through a local Unix socket; the client explicitly resumes the stored request. No approval endpoint is exposed through MCP or HTTP. Pending approvals and client-owned process/search sessions are invalidated on bridge restart. Policy configuration is stored in the registry and copied into service environments; live effective policy is verified separately.
 
 This does not introduce multi-user OS isolation. Host execution can reach resources beyond structured file-tool scope. See [permissions](permissions.md) for the trust boundary, migration, and supported operations.
+
+## Network providers
+
+`titian network` records the selected public endpoint and reports provider health. Tailscale Funnel and reverse proxies are externally managed. For Cloudflare Tunnel, Titian manages a local `cloudflared` LaunchAgent using a token for an existing remotely managed Tunnel; DNS records and the Tunnel's public-hostname route remain user-managed. In either case, external traffic terminates at the loopback gateway, never at a project process.
+
+The provider layer owns local provider configuration and health reporting. Project URLs carry the public hostname and route path; changing the hostname updates those URLs and auth-service issuer metadata without changing local project credentials or route paths. OAuth, project routing, permissions, and approvals remain inside Titian. See [cloudflare.md](cloudflare.md) for setup, lifecycle, and security details.

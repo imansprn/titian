@@ -15,6 +15,7 @@ import time
 import urllib.request
 import urllib.parse
 import permissions
+import network
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 ROOT = Path(os.environ.get('TITIAN_DATA_DIR', APP_ROOT / '.titian')).expanduser().resolve()
@@ -516,6 +517,16 @@ def main():
     p.add_argument('request_id', nargs='?')
     sub.add_parser('recover', help='Pulihkan operasi yang terputus')
     p = sub.add_parser('doctor'); p.add_argument('project', nargs='?', default='all'); p.add_argument('--public', action='store_true')
+    network_parser = sub.add_parser('network', help='Configure and diagnose external endpoint publishing')
+    network_actions = network_parser.add_subparsers(dest='network_action', required=True)
+    network_actions.add_parser('status', help='Show configured provider health')
+    network_actions.add_parser('doctor', help='Check provider, Tunnel, and public MCP endpoint health')
+    configure = network_actions.add_parser('configure', help='Select an external network provider')
+    configure.add_argument('provider', choices=['tailscale', 'cloudflare'])
+    configure.add_argument('--hostname', help='Public DNS hostname; defaults to the configured origin for Tailscale')
+    configure.add_argument('--tunnel-id', help='Existing remotely-managed Cloudflare Tunnel UUID')
+    configure.add_argument('--token-file', help='Path to the existing Tunnel token; copied into protected Titian state')
+    configure.add_argument('--cloudflared', help='Path to an existing cloudflared executable')
     p = sub.add_parser('rotate-logs'); p.add_argument('--max-mb', type=float, default=10); p.add_argument('--keep', type=int, default=5)
     for action in ['status', 'restart']:
         p = sub.add_parser(action); p.add_argument('project', nargs='?', default='all')
@@ -524,10 +535,23 @@ def main():
     with (ROOT / '.manage.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if args.action == 'init': initialize(args); return
-        if args.action == 'recover': recover(); return
+        if args.action == 'recover':
+            recover()
+            network.recover(sys.modules[__name__])
+            return
         if (ROOT / 'transaction').exists(): recover()
+        if (ROOT / 'network-transaction').exists(): network.recover(sys.modules[__name__])
         projects = load()
-        if args.action == 'add': add(args, projects)
+        if args.action == 'network':
+            if args.network_action == 'status': network.status(sys.modules[__name__], projects)
+            elif args.network_action == 'doctor': network.doctor(sys.modules[__name__], projects)
+            else:
+                if args.provider == 'cloudflare' and not all([args.hostname, args.tunnel_id, args.token_file]):
+                    parser.error('network configure cloudflare requires --hostname, --tunnel-id, and --token-file')
+                if args.provider == 'tailscale' and args.hostname is None and not settings().get('origin'):
+                    parser.error('network configure tailscale requires --hostname when no origin is configured')
+                network.configure(sys.modules[__name__], args, projects)
+        elif args.action == 'add': add(args, projects)
         elif args.action in ['remove','disable','enable','update']: change(args, projects)
         elif args.action == 'doctor': doctor(args, projects)
         elif args.action == 'rotate-logs': rotate_logs(args)

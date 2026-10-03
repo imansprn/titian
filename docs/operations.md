@@ -32,6 +32,16 @@ titian rotate-logs
 
 The gateway listens on port 8300 and exposes health endpoints `/health` and `/healthz`. Project services listen only on loopback. `add` assigns free ports and starts services before publishing the new route. HTTPS publishing remains an explicit external step.
 
+`titian doctor` checks each enabled project's local auth and bridge health, OAuth routing, and MCP initialization. Add `--public` to check the hostname from each project's configured URL against the public resolver at `1.1.1.1`, then check HTTPS reachability for each returned IPv4 address. The public request is unauthenticated and expects HTTP `401`; that is the expected response when the route is reachable but no credentials are supplied. The command does not change DNS or external publishing configuration.
+
+Public checks run once per project. Projects that share one hostname repeat the same DNS check, so one failed lookup can appear as `public-dns=FAIL` on every project. If that happens, inspect the shared hostname and rerun the lookup before changing configuration; DNS failures can be transient. To check it directly, use the hostname shown by `titian list`:
+
+```sh
+dig +short @1.1.1.1 YOUR_HOSTNAME A
+```
+
+No address means that resolver returned no IPv4 (`A`) record at that time. Confirm the hostname and public DNS, then retry. `public-<ip>=FAIL` means DNS returned an address but HTTPS did not return the expected `401`; check the TLS certificate and that Tailscale Funnel or your reverse proxy forwards the configured project path to `http://127.0.0.1:8300`. A successful public check does not replace the local auth, bridge, OAuth-routing, or MCP checks. Diagnose those failures separately with `titian doctor`, `titian status`, and the relevant service logs.
+
 The first project root is the default terminal directory. Multiple roots share one project's credentials and processes. Project-specific Desktop Commander config suppresses config mutation tools, but terminal commands still run as the OS user.
 
 Removal preserves source directories and archives credentials. Remove the corresponding client connection yourself. Re-adding a removed slug creates fresh credentials. `recover` finishes or rolls back an interrupted manager transaction.
@@ -112,3 +122,26 @@ Owner decisions require an interactive terminal. They are sent to an account-own
 Updates restart the project and discard outstanding approvals and session ownership. Add/update verifies the effective policy before reporting success; runtime or policy mismatches trigger rollback. `permissions` reports unverified for an offline/old runtime. No effective policy is inferred from the registry alone.
 
 See [permission semantics, migration and limits](permissions.md). Metadata contains local paths, so it is served through the authenticated MCP channel, not public OAuth discovery documents.
+
+## Network providers
+
+Titian records the selected public endpoint provider and manages the local `cloudflared` process for Cloudflare Tunnel. Tailscale Funnel and other reverse proxies remain externally managed. The gateway stays bound to `127.0.0.1:8300`; external routes must target the gateway, never a project service.
+
+```sh
+titian network status
+titian network doctor
+titian network configure tailscale
+```
+
+`network configure tailscale` records the hostname from the existing `--origin`. Use `--hostname` to change it explicitly. Cloudflare requires an existing remotely managed Tunnel, public-hostname route to `http://127.0.0.1:8300`, a DNS record, and a token file:
+
+```sh
+titian network configure cloudflare \
+  --hostname mcp.example.com \
+  --tunnel-id YOUR-TUNNEL-UUID \
+  --token-file /path/to/tunnel-token
+```
+
+Titian copies the token into the selected state directory's `secrets/` folder with owner-only permissions, installs a launch agent for the existing `cloudflared` binary, and waits for the tunnel to connect. `cloudflared` 2025.4.0 or later is required for token files. Titian does not create DNS records or Tunnel routes, or install/upgrade `cloudflared`; configure those externally first. Pass `--cloudflared /absolute/path/to/cloudflared` when it is not on `PATH`.
+
+Changing the hostname updates project URLs and OAuth issuer metadata while preserving project paths and local OAuth credentials. Update each MCP client's server URL and reconnect so it discovers the new issuer. Use `titian network doctor` to check the local tunnel connection, project health, DNS, and public HTTPS endpoint. It does not mutate Cloudflare or Tailscale resources. See [cloudflare.md](cloudflare.md) for provider behavior and security details.

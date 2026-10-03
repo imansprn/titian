@@ -27,7 +27,7 @@ You need:
 
 - **macOS**, Python **3.10+**, Node.js **22+**, npm and Git. The service manager uses macOS launchd; Linux is currently covered for protocol tests, not service management.
 - An MCP client that supports remote Streamable HTTP and OAuth dynamic registration.
-- A public HTTPS hostname forwarding to this Mac. The walkthrough uses an installed, signed-in Tailscale client with [Funnel enabled](https://tailscale.com/docs/features/tailscale-funnel). You can use your own HTTPS reverse proxy instead.
+- A public HTTPS hostname forwarding to this Mac. You can publish it with Tailscale Funnel, Cloudflare Tunnel, or another HTTPS reverse proxy. See [Network providers](docs/cloudflare.md) for setup and switching instructions.
 - An existing project folder. Titian configures access to it; it does not create or clone your application.
 
 Keep the Mac awake and online while connecting remotely.
@@ -85,9 +85,24 @@ For the Tailscale setup, publish the gateway:
 
 ```sh
 tailscale funnel --bg 8300
+titian network configure tailscale --hostname my-mac.my-tailnet.ts.net
 ```
 
-Follow any Funnel authorization instructions it prints. With your own HTTPS reverse proxy, activate the forwarding configured in step 1 instead.
+Follow any Funnel authorization instructions it prints. The hostname must resolve to this Mac inside the tailnet and be enabled for Funnel for public access.
+
+For Cloudflare Tunnel, first create a remotely managed Tunnel and configure its public hostname and DNS record to forward to `http://127.0.0.1:8300`. Then configure Titian with the Tunnel ID and a local token file:
+
+```sh
+titian network configure cloudflare \
+  --hostname mcp.example.com \
+  --tunnel-id YOUR-TUNNEL-UUID \
+  --token-file /path/to/tunnel-token
+titian network doctor
+```
+
+Titian manages the local `cloudflared` process. DNS and the Tunnel route are configured in Cloudflare first. See [Cloudflare networking](docs/cloudflare.md) for prerequisites and migration details.
+
+Titian publishes one canonical hostname in project URLs and OAuth metadata. Use the URL printed by `titian list` in MCP clients, then reconnect after changing providers or hostnames so the client refreshes OAuth discovery.
 
 ## 4. Connect your MCP client
 
