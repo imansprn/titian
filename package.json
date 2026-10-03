@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@wonderwhy-er/desktop-commander": "0.2.51"
+    "@wonderwhy-er/desktop-commander": "0.2.52"
   },
   "overrides": {
     "md-to-pdf": {
