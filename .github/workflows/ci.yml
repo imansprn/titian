@@ -35,7 +35,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm run setup
       - run: npm test
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python3 tests/test_failures.py
